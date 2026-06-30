@@ -1,0 +1,365 @@
+/****************************************************************************
+ * arch/arm/src/zynqr5/zynqr5_serial.c
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <nuttx/config.h>
+
+#include <sys/types.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <errno.h>
+
+#include <nuttx/irq.h>
+#include <nuttx/arch.h>
+#include <nuttx/serial/serial.h>
+
+#include "arm_internal.h"
+
+/****************************************************************************
+ * Pre-processor Definitions
+ *
+ * Cadence PS UART register layout (same for UART0 and UART1).
+ *
+ ****************************************************************************/
+
+#include <arch/zynqr5/chip.h>
+
+#define UART_CR_OFFSET      0x00U
+#define UART_MR_OFFSET      0x04U
+#define UART_IER_OFFSET     0x08U
+#define UART_IDR_OFFSET     0x0CU
+#define UART_IMR_OFFSET     0x10U
+#define UART_ISR_OFFSET     0x14U
+#define UART_BRGR_OFFSET    0x18U
+#define UART_RXTOUT_OFFSET  0x1CU
+#define UART_RXWM_OFFSET    0x20U
+#define UART_SR_OFFSET      0x2CU
+#define UART_FIFO_OFFSET    0x30U
+#define UART_BDIV_OFFSET    0x34U
+
+/* Control register */
+
+#define UART_CR_RXRST       (1U << 0)
+#define UART_CR_TXRST       (1U << 1)
+#define UART_CR_RXEN        (1U << 2)
+#define UART_CR_RXDIS       (1U << 3)
+#define UART_CR_TXEN        (1U << 4)
+#define UART_CR_TXDIS       (1U << 5)
+#define UART_CR_STPBRK      (1U << 8)
+
+/* Status register */
+
+#define UART_SR_RXOVR       (1U << 0)
+#define UART_SR_RXEMPTY     (1U << 1)
+#define UART_SR_RXFULL      (1U << 2)
+#define UART_SR_TXEMPTY     (1U << 3)
+#define UART_SR_TXFULL      (1U << 4)
+#define UART_SR_RXTRIG      (1U << 10)
+
+/* Interrupt bits (ISR, IER, IDR, IMR) */
+
+#define UART_INT_RTRIG      (1U << 0)   /* RX trigger */
+#define UART_INT_REMPTY     (1U << 1)   /* RX FIFO empty */
+#define UART_INT_RFUL       (1U << 2)   /* RX FIFO full */
+#define UART_INT_TEMPTY     (1U << 3)   /* TX FIFO empty */
+#define UART_INT_TFUL       (1U << 4)   /* TX FIFO full */
+#define UART_INT_ROVR       (1U << 5)   /* RX overflow */
+#define UART_INT_RFRAME     (1U << 6)   /* Frame error */
+#define UART_INT_RPARITY    (1U << 7)   /* Parity error */
+#define UART_INT_TOUT       (1U << 8)   /* RX timeout */
+#define UART_INT_DMSI       (1U << 9)   /* Delta modem status */
+
+/****************************************************************************
+ * Private Types
+ ****************************************************************************/
+
+struct zynqr5_uart_s
+{
+  uint32_t uartbase;    /* UART base address */
+  uint32_t baud;        /* Configured baud rate */
+  bool     rxint;       /* RX interrupt enabled */
+  bool     txint;       /* TX interrupt enabled */
+};
+
+/****************************************************************************
+ * Private Function Prototypes
+ ****************************************************************************/
+
+static int  zynqr5_setup(struct uart_dev_s *dev);
+static void zynqr5_shutdown(struct uart_dev_s *dev);
+static int  zynqr5_attach(struct uart_dev_s *dev);
+static void zynqr5_detach(struct uart_dev_s *dev);
+static int  zynqr5_ioctl(struct file *filep, int cmd, unsigned long arg);
+static int  zynqr5_receive(struct uart_dev_s *dev, unsigned int *status);
+static void zynqr5_rxint(struct uart_dev_s *dev, bool enable);
+static bool zynqr5_rxavailable(struct uart_dev_s *dev);
+static void zynqr5_send(struct uart_dev_s *dev, int ch);
+static void zynqr5_txint(struct uart_dev_s *dev, bool enable);
+static bool zynqr5_txready(struct uart_dev_s *dev);
+static bool zynqr5_txempty(struct uart_dev_s *dev);
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+static const struct uart_ops_s g_uart_ops __attribute__((used)) =
+{
+  .setup       = zynqr5_setup,
+  .shutdown    = zynqr5_shutdown,
+  .attach      = zynqr5_attach,
+  .detach      = zynqr5_detach,
+  .ioctl       = zynqr5_ioctl,
+  .receive     = zynqr5_receive,
+  .rxint       = zynqr5_rxint,
+  .rxavailable = zynqr5_rxavailable,
+  .send        = zynqr5_send,
+  .txint       = zynqr5_txint,
+  .txready     = zynqr5_txready,
+  .txempty     = zynqr5_txempty,
+};
+
+#ifdef CONFIG_ZYNQR5_UART0
+static struct zynqr5_uart_s g_uart0priv =
+{
+  .uartbase = ZYNQR5_UART0_BASE,
+  .baud     = CONFIG_UART0_BAUD,
+};
+
+static char g_uart0rxbuf[CONFIG_UART0_RXBUFSIZE];
+static char g_uart0txbuf[CONFIG_UART0_TXBUFSIZE];
+
+static struct uart_dev_s g_uart0dev =
+{
+  .recv =
+    {
+      .size   = CONFIG_UART0_RXBUFSIZE,
+      .buffer = g_uart0rxbuf,
+    },
+  .xmit =
+    {
+      .size   = CONFIG_UART0_TXBUFSIZE,
+      .buffer = g_uart0txbuf,
+    },
+  .ops  = &g_uart_ops,
+  .priv = &g_uart0priv,
+};
+#endif /* CONFIG_ZYNQR5_UART0 */
+
+#ifdef CONFIG_ZYNQR5_UART1
+static struct zynqr5_uart_s g_uart1priv =
+{
+  .uartbase = ZYNQR5_UART1_BASE,
+  .baud     = CONFIG_UART1_BAUD,
+};
+
+static char g_uart1rxbuf[CONFIG_UART1_RXBUFSIZE];
+static char g_uart1txbuf[CONFIG_UART1_TXBUFSIZE];
+
+static struct uart_dev_s g_uart1dev =
+{
+  .recv =
+    {
+      .size   = CONFIG_UART1_RXBUFSIZE,
+      .buffer = g_uart1rxbuf,
+    },
+  .xmit =
+    {
+      .size   = CONFIG_UART1_TXBUFSIZE,
+      .buffer = g_uart1txbuf,
+    },
+  .ops  = &g_uart_ops,
+  .priv = &g_uart1priv,
+};
+#endif /* CONFIG_ZYNQR5_UART1 */
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+static int zynqr5_setup(struct uart_dev_s *dev)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+  uint32_t cr;
+
+  /* Reset RX and TX FIFOs, then enable RX and TX */
+
+  putreg32(UART_CR_RXRST | UART_CR_TXRST, base + UART_CR_OFFSET);
+
+  cr = UART_CR_RXEN | UART_CR_TXEN;
+  putreg32(cr, base + UART_CR_OFFSET);
+
+  /* Disable all interrupts (Phase 1: polled) */
+
+  putreg32(0xffffffff, base + UART_IDR_OFFSET);
+
+  return OK;
+}
+
+static void zynqr5_shutdown(struct uart_dev_s *dev)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+
+  putreg32(UART_CR_TXDIS | UART_CR_RXDIS, base + UART_CR_OFFSET);
+  putreg32(0xffffffff, base + UART_IDR_OFFSET);
+}
+
+static int zynqr5_attach(struct uart_dev_s *dev)
+{
+  /* Phase 1: polled — no IRQ to attach */
+
+  return OK;
+}
+
+static void zynqr5_detach(struct uart_dev_s *dev)
+{
+  /* Phase 1: nothing to detach */
+}
+
+static int zynqr5_ioctl(struct file *filep, int cmd, unsigned long arg)
+{
+  return -ENOTTY;
+}
+
+static int zynqr5_receive(struct uart_dev_s *dev, unsigned int *status)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+
+  *status = 0;
+  return (int)(getreg32(base + UART_FIFO_OFFSET) & 0xff);
+}
+
+static void zynqr5_rxint(struct uart_dev_s *dev, bool enable)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+
+  priv->rxint = enable;
+
+  /* Phase 1: polled — no GIC wiring, interrupts not enabled */
+}
+
+static bool zynqr5_rxavailable(struct uart_dev_s *dev)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+
+  return (getreg32(base + UART_SR_OFFSET) & UART_SR_RXEMPTY) == 0;
+}
+
+static void zynqr5_send(struct uart_dev_s *dev, int ch)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+
+  while (getreg32(base + UART_SR_OFFSET) & UART_SR_TXFULL)
+    {
+    }
+
+  putreg32((uint32_t)ch, base + UART_FIFO_OFFSET);
+}
+
+static void zynqr5_txint(struct uart_dev_s *dev, bool enable)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+
+  priv->txint = enable;
+
+  /* Phase 1: polled — no TX interrupt */
+
+  if (enable)
+    {
+      /* Kick the TX path manually since we have no TX interrupt */
+
+      uart_xmitchars(dev);
+    }
+}
+
+static bool zynqr5_txready(struct uart_dev_s *dev)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+
+  return (getreg32(base + UART_SR_OFFSET) & UART_SR_TXFULL) == 0;
+}
+
+static bool zynqr5_txempty(struct uart_dev_s *dev)
+{
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+
+  return (getreg32(base + UART_SR_OFFSET) & UART_SR_TXEMPTY) != 0;
+}
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: arm_serialinit
+ *
+ * Description:
+ *   Register the PS UART serial drivers with the NuttX VFS layer.
+ *   Called from arm_initialize() → up_initialize() during OS boot.
+ *
+ ****************************************************************************/
+
+void arm_serialinit(void)
+{
+#ifdef CONFIG_ZYNQR5_UART0_CONSOLE
+  uart_register("/dev/console", &g_uart0dev);
+  uart_register("/dev/ttyS0",   &g_uart0dev);
+#elif defined(CONFIG_ZYNQR5_UART1_CONSOLE)
+  uart_register("/dev/console", &g_uart1dev);
+  uart_register("/dev/ttyS0",   &g_uart1dev);
+#endif
+
+#if defined(CONFIG_ZYNQR5_UART0) && !defined(CONFIG_ZYNQR5_UART0_CONSOLE)
+  uart_register("/dev/ttyS0", &g_uart0dev);
+#endif
+#if defined(CONFIG_ZYNQR5_UART1) && !defined(CONFIG_ZYNQR5_UART1_CONSOLE)
+  uart_register("/dev/ttyS1", &g_uart1dev);
+#endif
+}
+
+/****************************************************************************
+ * Name: up_putc
+ *
+ * Description:
+ *   Polled character output — used by early syslog and up_nputs before the
+ *   full serial driver is operational.
+ *
+ ****************************************************************************/
+
+int up_putc(int ch)
+{
+  if (ch == '\n')
+    {
+      arm_lowputc('\r');
+    }
+
+  arm_lowputc((char)ch);
+  return ch;
+}

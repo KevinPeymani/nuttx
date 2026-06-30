@@ -25,7 +25,7 @@ include common/Make.defs
 # The vector table is the "head" object, i.e., the one that must forced into
 # the link in order to draw in all of the other components
 
-HEAD_ASRC += arm_vectortab.S
+CMN_ASRCS += arm_vectortab.S
 
 # Common assembly language files
 

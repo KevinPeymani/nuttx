@@ -541,6 +541,14 @@ config ARCH_CHIP_TLSR82
 	---help---
 		Telink tlsr82xx architectures (Customed armv6m)
 
+config ARCH_CHIP_ZYNQR5
+	bool "AMD/Xilinx Zynq UltraScale+ MPSoC R5F"
+	select ARCH_CORTEXR5
+	select ARCH_HAVE_FPU
+	select ARCH_HAVE_LOWVECTORS
+	---help---
+		AMD/Xilinx Zynq UltraScale+ MPSoC Cortex-R5F (RPU) core.
+
 config ARCH_CHIP_ARM_CUSTOM
 	bool "Custom ARM chip"
 	select ARCH_CHIP_CUSTOM
@@ -904,6 +912,7 @@ config ARCH_CHIP
 	default "cxd56xx"	if ARCH_CHIP_CXD56XX
 	default "phy62xx"	if ARCH_CHIP_PHY62XX
 	default "tlsr82"	if ARCH_CHIP_TLSR82
+	default "zynqr5"	if ARCH_CHIP_ZYNQR5
 
 config ARCH_HAVE_TRUSTZONE
 	bool
@@ -1308,5 +1317,8 @@ source "arch/arm/src/cxd56xx/Kconfig"
 endif
 if ARCH_CHIP_TLSR82
 source "arch/arm/src/tlsr82/Kconfig"
+endif
+if ARCH_CHIP_ZYNQR5
+source "arch/arm/src/zynqr5/Kconfig"
 endif
 endif # ARCH_ARM

@@ -44,15 +44,25 @@
 
 /* Peripheral Base Offsets **************************************************/
 
+/* Defaults match Cortex-A9 MPCore.  Chips with a standalone GIC-400 at
+ * non-standard offsets (e.g. ZynqMPSoC R5F) can override these in chip.h
+ * before this header adds the defaults via #ifndef guards below. */
+
 #define MPCORE_SCU_OFFSET  0x0000 /* 0x0000-0x00fc SCU registers */
-#define MPCORE_ICC_OFFSET  0x2000 /* 0x0000-0x00FC Interrupt controller interface */
 #define MPCORE_GTM_OFFSET  0x0200 /* 0x0200-0x02ff Global timer */
 
 /* 0x0300-0x05ff Reserved */
 #define MPCORE_PTM_OFFSET  0x0600 /* 0x0600-0x06ff Private timers and watchdogs */
 
 /* 0x0700-0x07ff Reserved */
+
+#ifndef MPCORE_ICC_OFFSET
+#define MPCORE_ICC_OFFSET  0x2000 /* 0x0000-0x00FC Interrupt controller interface */
+#endif
+
+#ifndef MPCORE_ICD_OFFSET
 #define MPCORE_ICD_OFFSET  0x1000 /* 0x1000-0x1fff Interrupt Distributor */
+#endif
 
 /* Peripheral Base Addresses ************************************************/
 

@@ -1,0 +1,62 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+if ARCH_CHIP_ZYNQR5
+
+comment "Zynq UltraScale+ MPSoC R5F Peripheral Support"
+
+menu "UART Configuration"
+
+config ZYNQR5_UART0
+	bool "UART 0 (PS UART0 at 0xFF000000)"
+	default n
+	select UART0_SERIALDRIVER
+	select ARCH_HAVE_SERIAL_TERMIOS
+
+config ZYNQR5_UART0_CONSOLE
+	bool "Use UART0 as the NuttX console"
+	default n
+	depends on ZYNQR5_UART0
+
+config ZYNQR5_UART1
+	bool "UART 1 (PS UART1 at 0xFF010000)"
+	default n
+	select UART1_SERIALDRIVER
+	select ARCH_HAVE_SERIAL_TERMIOS
+
+config ZYNQR5_UART1_CONSOLE
+	bool "Use UART1 as the NuttX console"
+	default n
+	depends on ZYNQR5_UART1
+
+endmenu
+
+menu "TTC Timer Configuration"
+
+config ZYNQR5_TTC1
+	bool "Triple Timer Counter 1 (TTC1)"
+	default n
+
+config ZYNQR5_TTC_COUNTER0
+	bool "Use TTC1 counter 0 as system tick source"
+	default n
+	depends on ZYNQR5_TTC1
+
+config ZYNQR5_TTC_FREQ
+	int "TTC input clock frequency (Hz)"
+	default 100000000
+	depends on ZYNQR5_TTC1
+
+endmenu
+
+config ZYNQR5_RPTUN
+	bool "ZynqMPSoC R5F rptun/OpenAMP IPC"
+	depends on RPTUN
+	default n
+	---help---
+		Enable virtio rpmsg IPC from R5F to A53 via NuttX rptun.
+		Requires GICC access (XMPU unlock via BOOT.bin, Phase 3).
+
+endif # ARCH_CHIP_ZYNQR5

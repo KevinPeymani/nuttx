@@ -38,7 +38,11 @@
 
 #undef CPU_ALIGNMENT_TRAP
 #undef CPU_CACHE_ROUND_ROBIN
-#undef CPU_DCACHE_DISABLE
+/* ZynqMPSoC R5F: DDR is shared with A53 (remoteproc/virtio). Enabling
+ * D-cache causes rpmsg_virtio_wait_remote_ready() to read stale status
+ * bytes from the cache instead of the A53-written DDR value. Keep
+ * D-cache off until we have MPU-based non-cacheable regions configured. */
+#define CPU_DCACHE_DISABLE 1
 #undef CPU_ICACHE_DISABLE
 #define CPU_SCTLR_CCP15BEN 1
 #define CPU_BACKGROUND_REGION 1
