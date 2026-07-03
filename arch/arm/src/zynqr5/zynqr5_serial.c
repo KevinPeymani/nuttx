@@ -328,19 +328,23 @@ static bool zynqr5_txempty(struct uart_dev_s *dev)
 
 void arm_serialinit(void)
 {
-#ifdef CONFIG_ZYNQR5_UART0_CONSOLE
-  uart_register("/dev/console", &g_uart0dev);
-  uart_register("/dev/ttyS0",   &g_uart0dev);
-#elif defined(CONFIG_ZYNQR5_UART1_CONSOLE)
-  uart_register("/dev/console", &g_uart1dev);
-  uart_register("/dev/ttyS0",   &g_uart1dev);
-#endif
+  /* Always register both UARTs under their canonical names first:
+   *   UART0 → /dev/ttyS0
+   *   UART1 → /dev/ttyS1
+   * Then alias the console UART to /dev/console.
+   * This ensures CONFIG_SYSLOG_DEVPATH="/dev/ttyS1" always resolves. */
 
-#if defined(CONFIG_ZYNQR5_UART0) && !defined(CONFIG_ZYNQR5_UART0_CONSOLE)
+#ifdef CONFIG_ZYNQR5_UART0
   uart_register("/dev/ttyS0", &g_uart0dev);
 #endif
-#if defined(CONFIG_ZYNQR5_UART1) && !defined(CONFIG_ZYNQR5_UART1_CONSOLE)
+#ifdef CONFIG_ZYNQR5_UART1
   uart_register("/dev/ttyS1", &g_uart1dev);
+#endif
+
+#ifdef CONFIG_ZYNQR5_UART0_CONSOLE
+  uart_register("/dev/console", &g_uart0dev);
+#elif defined(CONFIG_ZYNQR5_UART1_CONSOLE)
+  uart_register("/dev/console", &g_uart1dev);
 #endif
 }
 
