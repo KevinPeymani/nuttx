@@ -234,6 +234,15 @@ static void rptun_worker(FAR void *arg)
 {
   FAR struct rptun_priv_s *priv = arg;
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  /* DBG: 0x3ED3FFD4 = WRKR count — incremented on every rptun_worker entry */
+  {
+    uint32_t n = *((volatile uint32_t *)0x3ED3FFD4u);
+    *((volatile uint32_t *)0x3ED3FFD4u) = n + 1;
+    __asm__ volatile("dsb sy" ::: "memory");
+  }
+#endif
+
   switch (priv->cmd)
     {
       case RPTUNIOC_START:
@@ -278,12 +287,48 @@ static int rptun_thread(int argc, FAR char *argv[])
 {
   FAR struct rptun_priv_s *priv;
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  /* Sentinel A: written before any priv access to confirm thread entry */
+  *((volatile uint32_t *)0x3ED3FFD0u) = 0xDEAD0001u;
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   priv = (FAR struct rptun_priv_s *)((uintptr_t)strtoul(argv[2], NULL, 0));
   priv->tid = gettid();
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  /* Sentinel B: written after priv is set up — if A is set but B is not,
+   * the crash is in argv[2] parsing or priv->tid write. */
+  *((volatile uint32_t *)0x3ED3FFD0u) = 0xDEAD0002u;
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   while (1)
     {
+#ifdef CONFIG_ZYNQR5_RPTUN
+      /* XMPU_FPD blocks GIC on the R5F, so IPI cannot be routed as an IRQ.
+       * Spin-poll the IPI register instead of blocking indefinitely.
+       * sched_yield() lets same-priority tasks (HPWORK) run between polls,
+       * but we always call ipi_check ourselves so we don't depend on idle. */
+      void zynqr5_rptun_ipi_check(void);
+      void zynqr5_timer_poll(void);
+      zynqr5_rptun_ipi_check();
+      zynqr5_timer_poll();
+      /* DBG: 0x3ED3FFD8 = 0xBB.. → spinning on semrx */
+      *((volatile uint32_t *)0x3ED3FFD8u) = 0xBBBBBBBBu;
+      __asm__ volatile("dsb sy" ::: "memory");
+      while (nxsem_trywait(&priv->semrx) != OK)
+        {
+          zynqr5_rptun_ipi_check();
+          zynqr5_timer_poll();
+          sched_yield();
+        }
+      /* DBG: 0xCC.. → semrx acquired, entering rptun_worker */
+      *((volatile uint32_t *)0x3ED3FFD8u) = 0xCCCCCCCCu;
+      __asm__ volatile("dsb sy" ::: "memory");
+#else
       nxsem_wait_uninterruptible(&priv->semrx);
+#endif
       rptun_worker(priv);
     }
 
@@ -454,9 +499,27 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
       return -EAGAIN;
     }
 
-  /* Wait to wakeup */
-
+#ifdef CONFIG_ZYNQR5_RPTUN
+  /* Spin-poll semtx: we cannot block indefinitely because idle may never
+   * run to call ipi_check (XMPU blocks GIC; ipi_check posts semtx). */
+  {
+    void zynqr5_rptun_ipi_check(void);
+    void zynqr5_timer_poll(void);
+    *((volatile uint32_t *)0x3ED3FFD8u) = 0xEEEEEEEEu;  /* DBG: in notify_wait */
+    __asm__ volatile("dsb sy" ::: "memory");
+    while (nxsem_trywait(&priv->semtx) != OK)
+      {
+        zynqr5_rptun_ipi_check();
+        zynqr5_timer_poll();
+        sched_yield();
+      }
+  }
+  *((volatile uint32_t *)0x3ED3FFD8u) = 0xFFFFFFFFu;  /* DBG: semtx acquired */
+  __asm__ volatile("dsb sy" ::: "memory");
+#else
   nxsem_wait(&priv->semtx);
+#endif
+
   rptun_worker(priv);
 
   return 0;

@@ -36,6 +36,11 @@
 #include <nuttx/irq.h>
 #include <nuttx/arch.h>
 
+/* RPTUN_NOTIFY_ALL is defined in rptun.h; pull in UINT32_MAX as fallback */
+#ifndef RPTUN_NOTIFY_ALL
+#  define RPTUN_NOTIFY_ALL UINT32_MAX
+#endif
+
 #include "arm_internal.h"
 #include "zynqr5_rptun.h"
 
@@ -58,11 +63,12 @@
 
 #define IPI_APU_BIT    (1u << 24)
 
-/* GIC SPI 65 = GIC interrupt ID 97 (32 + 65), assigned to RPU0 IPI.
- * REVISIT: verify against arch/arm/include/zynqr5/irq.h once GICC
- * initialization is in place. */
+/* GIC SPI 29 = GIC interrupt ID 61 (32 + 29), RPU0 IPI channel.
+ * Confirmed from Linux /proc/interrupts: "GICv2 61 Level zynqmp_ipi1".
+ * XMPU_FPD blocks R5F from GICD/GICC so GIC-based delivery is disabled;
+ * IPI is polled via zynqr5_rptun_ipi_check() called from up_idle(). */
 
-#define IPI_IRQ        97
+#define IPI_IRQ        61
 
 /* Debug breadcrumb area — last 32 bytes of the 256 KB ELF carveout.
  * Readable from A53 via devmem.  Writes survive cache since R5F D-cache is
@@ -75,6 +81,7 @@
 #define RPTUN_DBG_STEP    (RPTUN_DBG_BASE + 0x00u)
 #define RPTUN_DBG_NOTIFY  (RPTUN_DBG_BASE + 0x04u)
 #define RPTUN_DBG_ISR     (RPTUN_DBG_BASE + 0x08u)
+#define RPTUN_DBG_IDLE    (RPTUN_DBG_BASE + 0x0Cu) /* ipi_check call count */
 
 /* Step values written to RPTUN_DBG_STEP */
 #define DBG_STEP_INIT_ENTER    0x01u  /* zynqr5_rptun_initialize() entered */
@@ -128,6 +135,8 @@ static int  zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
 /****************************************************************************
  * Private Data
  ****************************************************************************/
+
+static struct zynqr5_rptun_dev_s g_zynqr5_rptun_priv;
 
 static const struct rptun_ops_s g_zynqr5_rptun_ops =
 {
@@ -190,7 +199,13 @@ static int zynqr5_rptun_notify(FAR struct rptun_dev_s *dev, uint32_t vqid)
   if (n == 0)
     rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_NOTIFY);
   rptun_dbg_write(RPTUN_DBG_NOTIFY, n + 1);
+
+  /* Kick A53: write IPI_APU_BIT to RPU0_TRIG to assert the R5F→A53 IPI.
+   * Do NOT write IPI_ISR here — that would erase any pending APU→R5F kick
+   * (e.g. the DRIVER_OK notification A53 sends before our first notify()),
+   * causing ipi_check() to miss it and leaving semrx never posted. */
   putreg32(IPI_APU_BIT, IPI_TRIG);
+
   return OK;
 }
 
@@ -202,6 +217,22 @@ static int zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
   rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_REG_CB);
   priv->callback = callback;
   priv->arg      = arg;
+
+  /* If A53's initial IPI is already pending in RPU0_ISR, fire callback now
+   * so rptun_dev_start() can proceed.
+   *
+   * IMPORTANT: do NOT clear IPI_ISR here.  The ISR clear happens later in
+   * notify(), after writing IPI_TRIG to kick A53.  That ordering guarantees
+   * PL0_ISR BIT(8) is set before SPI 29 fires on A53, so the Linux SPI 29
+   * handler sees our NS kick and calls rproc_vq_interrupt(). */
+
+  if (getreg32(IPI_ISR) & IPI_APU_BIT)
+    {
+      putreg32(IPI_APU_BIT, IPI_ISR);   /* clear */
+      callback(arg, RPTUN_NOTIFY_ALL);
+      putreg32(IPI_APU_BIT, IPI_TRIG);  /* ACK A53's kick */
+    }
+
   return OK;
 }
 
@@ -217,10 +248,44 @@ static int zynqr5_ipi_isr(int irq, FAR void *context, FAR void *arg)
 
   if (priv->callback != NULL)
     {
-      priv->callback(priv->arg, 0);  /* signature: (arg, vqid) */
+      priv->callback(priv->arg, RPTUN_NOTIFY_ALL);
     }
 
   return OK;
+}
+
+/* IPI polling fallback: called from up_idle() every scheduler tick.
+ * XMPU_FPD blocks R5F GICD access so GIC cannot route SPI-29 to R5F;
+ * poll IPI_RPU0_ISR directly — LPD IPI registers are accessible without
+ * XMPU restriction (confirmed via IPI_TRIG writes working). */
+
+void zynqr5_rptun_ipi_check(void)
+{
+  FAR struct zynqr5_rptun_dev_s *priv = &g_zynqr5_rptun_priv;
+
+  rptun_dbg_write(RPTUN_DBG_IDLE, getreg32(RPTUN_DBG_IDLE) + 1);
+
+  if (getreg32(IPI_ISR) & IPI_APU_BIT)
+    {
+      uint32_t isr_n = getreg32(RPTUN_DBG_ISR);
+      if (isr_n == 0)
+        rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_ISR);
+      rptun_dbg_write(RPTUN_DBG_ISR, isr_n + 1);
+
+      /* Clear the IPI before calling callback so A53 can kick again. */
+      putreg32(IPI_APU_BIT, IPI_ISR);
+
+      /* ACK A53's kick: writing RPU0_TRIG[APU_bit] sets APU_ISR[RPU0_bit],
+       * which triggers SPI 29 on A53 → zynqmp_ipi_interrupt() →
+       * mbox_chan_txdone() → clears ack_pending → A53 can send next kick. */
+      putreg32(IPI_APU_BIT, IPI_TRIG);
+
+      /* The ZynqMPSoC IPI carries no vring notifyid — use RPTUN_NOTIFY_ALL
+       * so rptun_callback() checks both the RX vring (wakes rptun thread if
+       * A53 sent data) and the TX vring (unblocks notify_wait). */
+      if (priv->callback != NULL)
+        priv->callback(priv->arg, RPTUN_NOTIFY_ALL);
+    }
 }
 
 /****************************************************************************
@@ -253,7 +318,7 @@ uintptr_t up_addrenv_va_to_pa(FAR void *va)
 
 int zynqr5_rptun_initialize(void)
 {
-  static struct zynqr5_rptun_dev_s priv;  /* static: lives for process lifetime */
+  FAR struct zynqr5_rptun_dev_s *priv = &g_zynqr5_rptun_priv;
   int ret;
 
   /* Zero the debug area so A53 can detect fresh writes. */
@@ -261,23 +326,26 @@ int zynqr5_rptun_initialize(void)
   putreg32(0, RPTUN_DBG_STEP);
   putreg32(0, RPTUN_DBG_NOTIFY);
   putreg32(0, RPTUN_DBG_ISR);
+  putreg32(0, RPTUN_DBG_IDLE);
+  *((volatile uint32_t *)0x3ED3FFDCu) = 0; /* up_idle heartbeat */
+  *((volatile uint32_t *)0x3ED3FFD4u) = 0; /* WRKR count */
+  *((volatile uint32_t *)0x3ED3FFD8u) = 0; /* STATE */
   __asm__ volatile("dsb sy" ::: "memory");
 
   rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_INIT_ENTER);  /* 0x01 */
 
-  priv.rptun.ops = &g_zynqr5_rptun_ops;
+  priv->rptun.ops = &g_zynqr5_rptun_ops;
 
   putreg32(IPI_APU_BIT, IPI_IER);
 
-  /* irq_attach() and up_enable_irq() write to GICD (0xF9010000) which is
-   * blocked by XMPU for RPU0 — accessing it causes a data abort.
-   * TODO: re-enable once the Vitis BOOT.BIN XMPU config allows RPU0 to
-   * access GICD/GICC, so that incoming IPI from APU can be delivered. */
+  /* GICD/GICC (0xF9010000/0xF9020000) are blocked by XMPU_FPD for RPU0.
+   * irq_attach + up_enable_irq would write GICD → data abort.
+   * IPI delivery uses zynqr5_rptun_ipi_check() from up_idle() instead. */
 
-  /* irq_attach(IPI_IRQ, zynqr5_ipi_isr, &priv); */
+  /* irq_attach(IPI_IRQ, zynqr5_ipi_isr, priv); */
   /* up_enable_irq(IPI_IRQ); */
 
-  ret = rptun_initialize(&priv.rptun);
+  ret = rptun_initialize(&priv->rptun);
   if (ret == OK)
     {
       rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_INIT_DONE);  /* 0x02 */

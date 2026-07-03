@@ -19,6 +19,8 @@
  * Public Function Prototypes
  ****************************************************************************/
 
-int zynqr5_rptun_initialize(void);
+int  zynqr5_rptun_initialize(void);
+void zynqr5_rptun_ipi_check(void);
+void zynqr5_timer_poll(void);
 
 #endif /* __ARCH_ARM_SRC_ZYNQR5_ZYNQR5_RPTUN_H */

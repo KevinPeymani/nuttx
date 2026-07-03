@@ -163,19 +163,33 @@ void up_timer_initialize(void)
  *
  ****************************************************************************/
 
-void up_idle(void)
-{
-  uint32_t status;
+#ifdef CONFIG_ZYNQR5_RPTUN
+#  include "zynqr5_rptun.h"
+#endif
 
-  status = getreg32(TTC_INT_STATUS);
+/* zynqr5_timer_poll — poll TTC interval flag and drive the NuttX scheduler.
+ * Called from both up_idle() and from the rptun thread (via zynqr5_rptun.h)
+ * so the tick advances even when the idle task never gets CPU time. */
+
+void zynqr5_timer_poll(void)
+{
+  uint32_t status = getreg32(TTC_INT_STATUS);
   if (status & TTC_INT_INTERVAL)
     {
-      /* Clear the interrupt flag (write 1 to clear) */
-
       putreg32(TTC_INT_INTERVAL, TTC_INT_STATUS);
-
-      /* Drive the NuttX scheduler tick */
-
       nxsched_process_timer();
     }
+}
+
+void up_idle(void)
+{
+#ifdef CONFIG_ZYNQR5_RPTUN
+  /* 0x3ED3FFDC: up_idle heartbeat — incremented on EVERY up_idle entry.
+   * Distinguishes "idle not scheduled" (stays 0) from "ipi_check skipped"
+   * (this counter advances while RPTUN_DBG_IDLE does not). */
+  *((volatile uint32_t *)0x3ED3FFDCu) = *((volatile uint32_t *)0x3ED3FFDCu) + 1;
+  __asm__ volatile("dsb sy" ::: "memory");
+  zynqr5_rptun_ipi_check();
+#endif
+  zynqr5_timer_poll();
 }
