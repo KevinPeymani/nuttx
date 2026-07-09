@@ -81,6 +81,10 @@
 #define ZYNQR5_IRQ_TTC1_1       (ZYNQR5_IRQ_SPI_OFFSET + 40)   /* IRQ 72 */
 #define ZYNQR5_IRQ_TTC1_2       (ZYNQR5_IRQ_SPI_OFFSET + 41)   /* IRQ 73 */
 
+/* IPI channel — RPU0 IPI interrupt (echo-vitis xparameters: XPAR_XIPIPSU_0_INTR=0x41=65,
+ * INTERRUPTS=0x4021 → SPI 33, GIC ID 65; base addr 0xFF310000). */
+#define ZYNQR5_IRQ_IPI1         (ZYNQR5_IRQ_SPI_OFFSET + 33)   /* IRQ 65 */
+
 /* Total number of IRQs */
 
 #define NR_IRQS                 ZYNQR5_IRQ_NINT

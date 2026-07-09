@@ -52,20 +52,19 @@
 #define ZYNQR5_UART0_BASE       0xFF000000  /* UART0 (PS UART) */
 #define ZYNQR5_UART1_BASE       0xFF010000  /* UART1 (PS UART) */
 
-/* GIC-400 (PS GIC) base addresses.
- * The ZynqMPSoC GIC-400 is NOT at standard Cortex-A9 MPCore offsets.
- * Distributor is at base+0x10000, CPU interface at base+0x20000. */
+/* RPU GIC (ARM PL390 GICv1) — the R5F RPU has its own dedicated GIC,
+ * completely separate from the APU GIC-400 at 0xF9010000/0xF9020000.
+ * RPU GICD = 0xF9000000, RPU GICC = 0xF9001000. */
 
-#define ZYNQR5_GIC_BASE         0xF9000000  /* GIC-400 base */
-#define ZYNQR5_GIC_DIST_BASE    (ZYNQR5_GIC_BASE + 0x10000)  /* GICD 0xF9010000 */
-#define ZYNQR5_GIC_CPU_BASE     (ZYNQR5_GIC_BASE + 0x20000)  /* GICC 0xF9020000 */
+#define ZYNQR5_GIC_BASE         0xF9000000  /* RPU GIC base */
+#define ZYNQR5_GIC_DIST_BASE    ZYNQR5_GIC_BASE              /* GICD 0xF9000000 */
+#define ZYNQR5_GIC_CPU_BASE     (ZYNQR5_GIC_BASE + 0x1000)  /* GICC 0xF9001000 */
 
 /* Override standard MPCore offsets before mpcore.h defines them.
- * mpcore.h includes this file, then uses #ifndef guards for these macros,
- * so defining them here takes precedence over the A9 defaults. */
+ * RPU GICv1 PL390: GICD at base+0, GICC at base+0x1000. */
 
-#define MPCORE_ICD_OFFSET       0x10000  /* GICD at GIC_BASE + 0x10000 */
-#define MPCORE_ICC_OFFSET       0x20000  /* GICC at GIC_BASE + 0x20000 */
+#define MPCORE_ICD_OFFSET       0x00000  /* GICD at GIC_BASE + 0 */
+#define MPCORE_ICC_OFFSET       0x01000  /* GICC at GIC_BASE + 0x1000 */
 
 #define CHIP_MPCORE_VBASE       ZYNQR5_GIC_BASE
 
