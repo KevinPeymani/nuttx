@@ -35,6 +35,7 @@
 #include <nuttx/serial/serial.h>
 
 #include "arm_internal.h"
+#include "arch/zynqr5/irq.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -110,6 +111,7 @@ static int  zynqr5_setup(struct uart_dev_s *dev);
 static void zynqr5_shutdown(struct uart_dev_s *dev);
 static int  zynqr5_attach(struct uart_dev_s *dev);
 static void zynqr5_detach(struct uart_dev_s *dev);
+static int  zynqr5_interrupt(int irq, FAR void *context, FAR void *arg);
 static int  zynqr5_ioctl(struct file *filep, int cmd, unsigned long arg);
 static int  zynqr5_receive(struct uart_dev_s *dev, unsigned int *status);
 static void zynqr5_rxint(struct uart_dev_s *dev, bool enable);
@@ -197,6 +199,15 @@ static struct uart_dev_s g_uart1dev =
  * Private Functions
  ****************************************************************************/
 
+static uint32_t zynqr5_uart_irq(struct zynqr5_uart_s *priv)
+{
+#ifdef CONFIG_ZYNQR5_UART0
+  if (priv->uartbase == ZYNQR5_UART0_BASE)
+    return ZYNQR5_IRQ_UART0;
+#endif
+  return ZYNQR5_IRQ_UART1;
+}
+
 static int zynqr5_setup(struct uart_dev_s *dev)
 {
   struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
@@ -210,7 +221,7 @@ static int zynqr5_setup(struct uart_dev_s *dev)
   cr = UART_CR_RXEN | UART_CR_TXEN;
   putreg32(cr, base + UART_CR_OFFSET);
 
-  /* Disable all interrupts (Phase 1: polled) */
+  /* Disable all UART interrupts; rxint/txint re-enable as needed */
 
   putreg32(0xffffffff, base + UART_IDR_OFFSET);
 
@@ -228,14 +239,39 @@ static void zynqr5_shutdown(struct uart_dev_s *dev)
 
 static int zynqr5_attach(struct uart_dev_s *dev)
 {
-  /* Phase 1: polled — no IRQ to attach */
-
-  return OK;
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t irq = zynqr5_uart_irq(priv);
+  int ret = irq_attach(irq, zynqr5_interrupt, dev);
+  if (ret == OK)
+    up_enable_irq(irq);
+  return ret;
 }
 
 static void zynqr5_detach(struct uart_dev_s *dev)
 {
-  /* Phase 1: nothing to detach */
+  struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t irq = zynqr5_uart_irq(priv);
+  up_disable_irq(irq);
+  irq_detach(irq);
+}
+
+static int zynqr5_interrupt(int irq, FAR void *context, FAR void *arg)
+{
+  FAR struct uart_dev_s *dev = (FAR struct uart_dev_s *)arg;
+  FAR struct zynqr5_uart_s *priv = (FAR struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+  uint32_t isr;
+
+  isr = getreg32(base + UART_ISR_OFFSET);
+  putreg32(isr, base + UART_ISR_OFFSET);  /* W1C clear */
+
+  if (isr & (UART_INT_RTRIG | UART_INT_TOUT))
+    uart_recvchars(dev);
+
+  if (isr & UART_INT_TEMPTY)
+    uart_xmitchars(dev);
+
+  return OK;
 }
 
 static int zynqr5_ioctl(struct file *filep, int cmd, unsigned long arg)
@@ -255,10 +291,14 @@ static int zynqr5_receive(struct uart_dev_s *dev, unsigned int *status)
 static void zynqr5_rxint(struct uart_dev_s *dev, bool enable)
 {
   struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
 
   priv->rxint = enable;
 
-  /* Phase 1: polled — no GIC wiring, interrupts not enabled */
+  if (enable)
+    putreg32(UART_INT_RTRIG | UART_INT_TOUT, base + UART_IER_OFFSET);
+  else
+    putreg32(UART_INT_RTRIG | UART_INT_TOUT, base + UART_IDR_OFFSET);
 }
 
 static bool zynqr5_rxavailable(struct uart_dev_s *dev)
@@ -284,16 +324,24 @@ static void zynqr5_send(struct uart_dev_s *dev, int ch)
 static void zynqr5_txint(struct uart_dev_s *dev, bool enable)
 {
   struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
+  uint32_t base = priv->uartbase;
+  irqstate_t flags;
 
   priv->txint = enable;
 
-  /* Phase 1: polled — no TX interrupt */
-
   if (enable)
     {
-      /* Kick the TX path manually since we have no TX interrupt */
+      /* Enable TEMPTY and drain under a critical section so the ISR
+       * cannot preempt between the IER write and uart_xmitchars(). */
 
+      flags = enter_critical_section();
+      putreg32(UART_INT_TEMPTY, base + UART_IER_OFFSET);
       uart_xmitchars(dev);
+      leave_critical_section(flags);
+    }
+  else
+    {
+      putreg32(UART_INT_TEMPTY, base + UART_IDR_OFFSET);
     }
 }
 

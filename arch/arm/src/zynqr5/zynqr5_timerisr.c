@@ -26,8 +26,10 @@
 
 #include <stdint.h>
 #include <nuttx/arch.h>
+#include <nuttx/irq.h>
 
 #include "arm_internal.h"
+#include "arch/zynqr5/irq.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -114,6 +116,24 @@
 #define TTC_INTERVAL_VAL ((TTC_TICK_CLK * CONFIG_USEC_PER_TICK) / 1000000UL)
 
 /****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+static int zynqr5_timer_interrupt(int irq, FAR void *context, FAR void *arg)
+{
+  /* Reading TTC_INT_STATUS clears the interval flag. */
+
+  (void)getreg32(TTC_INT_STATUS);
+
+  /* Alive counter at end of DDR carveout — readable from A53 via devmem. */
+
+  *((volatile uint32_t *)0x1ED3FFDCu) += 1;
+
+  nxsched_process_timer();
+  return OK;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -121,7 +141,7 @@
  * Name: up_timer_initialize
  *
  * Description:
- *   Set up TTC in interval mode for polled system tick.
+ *   Set up TTC in interval mode, attach ISR to GIC IRQ 71 (TTC1 counter 0).
  *
  ****************************************************************************/
 
@@ -143,53 +163,49 @@ void up_timer_initialize(void)
 
   putreg32(TTC_CTRL_INT | TTC_CTRL_RST, TTC_CNT_CTRL);
 
-  /* Disable interrupts (polled via up_idle) */
+  /* Enable interval interrupt */
 
-  putreg32(0, TTC_INT_ENABLE);
+  putreg32(TTC_INT_INTERVAL, TTC_INT_ENABLE);
 
   /* Start the counter (clear DIS bit) */
 
   putreg32(TTC_CTRL_INT, TTC_CNT_CTRL);
+
+  /* Attach ISR — but do NOT call up_enable_irq (writes GICD_ISENABLERn).
+   * RPU GIC writes are blocked by LPD_XPPU/XMPU, causing a data abort.
+   * TTC ISR is not needed: rptun uses spin-poll instead of IRQ-driven ticks. */
+
+  irq_attach(ZYNQR5_IRQ_TTC1_0, zynqr5_timer_interrupt, NULL);
 }
 
 /****************************************************************************
  * Name: up_idle
  *
  * Description:
- *   Poll the TTC interval flag.  When the interval fires call
- *   nxsched_process_timer() to drive the NuttX scheduler.
- *
+ *   Wait for interrupt.  Timer and IPI are now GIC-driven; idle can sleep.
  *   This replaces the common arm_idle.c (filtered out in Make.defs).
  *
  ****************************************************************************/
 
-#ifdef CONFIG_ZYNQR5_RPTUN
-#  include "zynqr5_rptun.h"
-#endif
-
-/* zynqr5_timer_poll — poll TTC interval flag and drive the NuttX scheduler.
- * Called from both up_idle() and from the rptun thread (via zynqr5_rptun.h)
- * so the tick advances even when the idle task never gets CPU time. */
+/* Polled timer tick — called from rptun spin-poll when GIC is disabled.
+ * TTC is now interrupt-driven; this is a no-op kept for link compatibility. */
 
 void zynqr5_timer_poll(void)
 {
-  uint32_t status = getreg32(TTC_INT_STATUS);
-  if (status & TTC_INT_INTERVAL)
-    {
-      putreg32(TTC_INT_INTERVAL, TTC_INT_STATUS);
-      nxsched_process_timer();
-    }
 }
 
 void up_idle(void)
 {
-#ifdef CONFIG_ZYNQR5_RPTUN
-  /* 0x3ED3FFDC: up_idle heartbeat — incremented on EVERY up_idle entry.
-   * Distinguishes "idle not scheduled" (stays 0) from "ipi_check skipped"
-   * (this counter advances while RPTUN_DBG_IDLE does not). */
-  *((volatile uint32_t *)0x3ED3FFDCu) = *((volatile uint32_t *)0x3ED3FFDCu) + 1;
-  __asm__ volatile("dsb sy" ::: "memory");
-  zynqr5_rptun_ipi_check();
-#endif
-  zynqr5_timer_poll();
+  __asm__ volatile("wfi" ::: "memory");
+
+  /* Fallback IPI check: fire every ~10 ms (every 20th TTC wake at ~2 kHz).
+   * Catches A53 kicks that the GIC failed to deliver as SPI 33. */
+
+  static uint32_t s_ipi_tick;
+  s_ipi_tick++;
+  if ((s_ipi_tick & 0x1fu) == 0)
+    {
+      void zynqr5_rptun_ipi_check(void);
+      zynqr5_rptun_ipi_check();
+    }
 }

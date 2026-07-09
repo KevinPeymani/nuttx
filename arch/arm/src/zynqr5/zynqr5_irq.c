@@ -51,39 +51,47 @@ volatile uint32_t *g_current_regs[1];
  * Name: up_irqinitialize
  *
  * Description:
- *   Initialize the GIC distributor (arm_gic0_initialize) and the per-CPU
- *   CPU interface (arm_gic_initialize).  GICD (0xF9010000) and GICC
- *   (0xF9020000) must be accessible from R5F — ensured by the XMPU_FPD
- *   configuration in the custom FSBL (BOOT.BIN).
+ *   Probe RPU GIC GICD_IIDR (read-only, safe regardless of XMPU).
+ *   Breadcrumbs at 0x1ED3FFCC are readable from A53 via devmem:
+ *     0xBEEF0010 = about to read GICD_IIDR
+ *     0xBEEF0011 = GICD_IIDR read completed (value stored at 0x1ED3FFD0)
+ *     0xBEEF0012 = up_irqinitialize() completed (GIC init skipped — XMPU)
+ *   GIC init (arm_gic0_initialize / arm_gic_initialize) is skipped until BOOT.BIN
+ *   XMPU config is updated.  rptun uses spin-poll instead of GIC ISR delivery.
  *
  ****************************************************************************/
 
 void up_irqinitialize(void)
 {
-  /* XMPU blocks RPU0 access to GICD (0xF9010000) / GICC (0xF9020000).
-   * Calling arm_gic0_initialize() causes a data abort and halts R5F.
-   *
-   * TODO: fix the Vitis BOOT.BIN XMPU config to allow RPU0 read/write of
-   * GICD and GICC, then re-enable arm_gic0_initialize() + arm_gic_initialize()
-   * so IPI IRQ 97 can be delivered to R5F for incoming rpmsg messages.
-   *
-   * Until then: TTC tick runs polled; outgoing IPI writes (IPI_TRIG) work
-   * without GIC; the first rptun_dev_start() (autostart) runs and sends
-   * the NS announcement without needing an incoming IRQ from APU. */
+  putreg32(0xBEEF0010u, 0x1ED3FFCCu);
+  uint32_t iidr = getreg32(0xF9000008u);  /* GICD_IIDR — read-only probe */
+  putreg32(0xBEEF0011u, 0x1ED3FFCCu);
+  putreg32(iidr,        0x1ED3FFD0u);     /* store IIDR for inspection */
 
+  /* XMPU blocks RPU0 writes to GICD (0xF9000000) — arm_gic0_initialize()
+   * either stalls the AXI bus or corrupts GIC state, leading to an unhandled
+   * IPI interrupt panic when up_irq_enable() unmasks IRQs before the IPI ISR
+   * is registered in zynqr5_rptun_initialize().
+   *
+   * rptun uses the spin-poll path (zynqr5_rptun_ipi_check) instead of GIC SPI
+   * delivery.  Re-enable once BOOT.BIN XMPU config grants RPU0 access to
+   * 0xF9000000–0xF9001FFF and the IPI ISR is registered before up_irq_enable(). */
 #ifdef CONFIG_ARMV7R_HAVE_GICv2
   /* arm_gic0_initialize();  — blocked by XMPU until BOOT.BIN is fixed */
   /* arm_gic_initialize();   — blocked by XMPU until BOOT.BIN is fixed */
+  /* up_irq_enable();        — unsafe: premature IPI fires before ISR registered */
 #endif
+
+  putreg32(0xBEEF0012u, 0x1ED3FFCCu);
 }
 
 /****************************************************************************
  * Name: arm_ack_irq
  *
  * Description:
- *   Polled TTC timer — no GIC interrupt acknowledgement needed.
- *   up_enable_irq / up_disable_irq are provided by arm_gicv2.c (always
- *   compiled for armv7-r) and are safe no-ops when the GIC is uninitialised.
+ *   arm_decodeirq() in arm_gicv2.c writes GICC_EOIR before calling the ISR,
+ *   so end-of-interrupt is already handled.  Keep this as a no-op to avoid
+ *   a double-EOI.
  *
  ****************************************************************************/
 

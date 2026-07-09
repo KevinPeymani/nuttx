@@ -12,29 +12,17 @@
  * downloaded copy in nuttx/include/metal/processor/arm/cpu.h, making the
  * override version-controlled and survive clean builds.
  *
- * When CONFIG_ZYNQR5_RPTUN is set the rptun thread runs at priority 224 and
- * sched_yield() alone never reaches the idle task (priority 0), so IPI
- * checking never happens during the rpmsg_virtio DRIVER_OK busy-spin phase.
- * Polling IPI + timer on every yield lets the spin phase detect A53 kicks.
+ * With GIC-based IPI handling (CONFIG_ARMV7R_HAVE_GICv2), the GIC ISR
+ * delivers A53 kicks asynchronously — no manual IPI polling needed in the
+ * metal_cpu_yield() spin loops.  sched_yield() is sufficient: it gives the
+ * scheduler a chance to run and briefly re-enables interrupts between
+ * iterations, allowing the GIC ISR to fire and update shared-memory state.
  */
 
 #ifndef __METAL_ARM_CPU__H__
 #define __METAL_ARM_CPU__H__
 
-#ifdef CONFIG_ZYNQR5_RPTUN
-#  include <sched.h>
-void zynqr5_rptun_ipi_check(void);
-void zynqr5_timer_poll(void);
-static inline void _zynqr5_metal_yield(void)
-{
-  zynqr5_rptun_ipi_check();
-  zynqr5_timer_poll();
-  sched_yield();
-}
-#  define metal_cpu_yield() _zynqr5_metal_yield()
-#else
-#  include <sched.h>
-#  define metal_cpu_yield() sched_yield()
-#endif
+#include <sched.h>
+#define metal_cpu_yield() sched_yield()
 
 #endif /* __METAL_ARM_CPU__H__ */
