@@ -55,9 +55,8 @@ volatile uint32_t *g_current_regs[1];
  *   Breadcrumbs at 0x1ED3FFCC are readable from A53 via devmem:
  *     0xBEEF0010 = about to read GICD_IIDR
  *     0xBEEF0011 = GICD_IIDR read completed (value stored at 0x1ED3FFD0)
- *     0xBEEF0012 = up_irqinitialize() completed (GIC init skipped — XMPU)
- *   GIC init (arm_gic0_initialize / arm_gic_initialize) is skipped until BOOT.BIN
- *   XMPU config is updated.  rptun uses spin-poll instead of GIC ISR delivery.
+ *     0xBEEF0012 = GIC init + up_irq_enable() completed
+ *   rptun spin-poll fallback in up_idle() remains active as a safety net.
  *
  ****************************************************************************/
 
@@ -68,18 +67,29 @@ void up_irqinitialize(void)
   putreg32(0xBEEF0011u, 0x1ED3FFCCu);
   putreg32(iidr,        0x1ED3FFD0u);     /* store IIDR for inspection */
 
-  /* XMPU blocks RPU0 writes to GICD (0xF9000000) — arm_gic0_initialize()
-   * either stalls the AXI bus or corrupts GIC state, leading to an unhandled
-   * IPI interrupt panic when up_irq_enable() unmasks IRQs before the IPI ISR
-   * is registered in zynqr5_rptun_initialize().
+  /* Attempt to initialize the RPU GIC (PL390 at 0xF9000000).
    *
-   * rptun uses the spin-poll path (zynqr5_rptun_ipi_check) instead of GIC SPI
-   * delivery.  Re-enable once BOOT.BIN XMPU config grants RPU0 access to
-   * 0xF9000000–0xF9001FFF and the IPI ISR is registered before up_irq_enable(). */
+   * NOTE: As of 2026-07-09, LPD_XPPU silently discards all writes to
+   * the RPU GIC aperture (0xF9000000–0xF9001FFF) — confirmed by reading
+   * GICD_CTLR, GICD_ISENABLER, GICC_CTLR after arm_gic*_initialize():
+   * all remain 0.  arm_gic0/gic_initialize() and up_enable_irq() therefore
+   * run without faulting but have no effect.  Individual irq_attach +
+   * up_enable_irq calls in zynqr5_timerisr.c and zynqr5_rptun.c also have
+   * no effect for the same reason.
+   *
+   * Resolution: update BOOT.BIN (FSBL xfsbl_hooks.c) to configure
+   * LPD_XPPU to allow RPU0 Master ID write access to this range.
+   * Once BOOT.BIN is fixed, GIC init here will succeed and all ISRs
+   * will be delivered without any further code changes.
+   *
+   * Until then: rptun uses the spin-poll path in up_idle() (fallback in
+   * zynqr5_rptun_ipi_check).  up_irq_enable() is still called here so
+   * that the ARM CPSR.I bit is cleared — needed for WFI to be interruptible
+   * by whatever signals the processor does receive. */
 #ifdef CONFIG_ARMV7R_HAVE_GICv2
-  /* arm_gic0_initialize();  — blocked by XMPU until BOOT.BIN is fixed */
-  /* arm_gic_initialize();   — blocked by XMPU until BOOT.BIN is fixed */
-  /* up_irq_enable();        — unsafe: premature IPI fires before ISR registered */
+  arm_gic0_initialize();
+  arm_gic_initialize();
+  up_irq_enable();
 #endif
 
   putreg32(0xBEEF0012u, 0x1ED3FFCCu);

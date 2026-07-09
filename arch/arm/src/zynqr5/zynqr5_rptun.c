@@ -354,8 +354,7 @@ int zynqr5_rptun_initialize(void)
   putreg32(IPI_APU_BIT, IPI_IER);
 
   irq_attach(IPI_IRQ, zynqr5_ipi_isr, priv);
-  /* up_enable_irq(IPI_IRQ) omitted: writes GICD_ISENABLERn, blocked by LPD_XPPU.
-   * IPI delivery uses spin-poll (zynqr5_rptun_ipi_check) instead of GIC SPI 33. */
+  up_enable_irq(IPI_IRQ);
 
   ret = rptun_initialize(&priv->rptun);
   if (ret == OK)

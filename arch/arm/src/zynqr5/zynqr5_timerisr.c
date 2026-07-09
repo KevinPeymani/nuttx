@@ -171,11 +171,8 @@ void up_timer_initialize(void)
 
   putreg32(TTC_CTRL_INT, TTC_CNT_CTRL);
 
-  /* Attach ISR — but do NOT call up_enable_irq (writes GICD_ISENABLERn).
-   * RPU GIC writes are blocked by LPD_XPPU/XMPU, causing a data abort.
-   * TTC ISR is not needed: rptun uses spin-poll instead of IRQ-driven ticks. */
-
   irq_attach(ZYNQR5_IRQ_TTC1_0, zynqr5_timer_interrupt, NULL);
+  up_enable_irq(ZYNQR5_IRQ_TTC1_0);
 }
 
 /****************************************************************************
