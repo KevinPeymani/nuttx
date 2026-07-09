@@ -27,10 +27,10 @@
  *
  * On R5F reset the CPU fetches from ATCM[0x00].  Each entry performs an
  * indirect branch (LDR PC, literal) to the corresponding entry in the
- * NuttX vector table located in DDR at _vector_start (0x3ED00000).
+ * NuttX vector table located in DDR at _vector_start (0x1ED00000).
  *
  * The reference to _vector_start ensures arm_vectortab.o is pulled from
- * libarch.a so the DDR vector table section (.vectors at 0x3ED00000) is
+ * libarch.a so the DDR vector table section (.vectors at 0x1ED00000) is
  * populated.  Do NOT define _vector_start as a linker-script symbol —
  * that would satisfy the reference without linking arm_vectortab.o.
  *
@@ -63,7 +63,7 @@
  ****************************************************************************/
 
 _tcm_start:
-	ldr		pc, .Lv0		/* 0x00: Reset */
+	ldr		pc, .Lv0		/* 0x00: Reset — jumps to _atcm_ipi_boot */
 	ldr		pc, .Lv1		/* 0x04: Undefined instruction */
 	ldr		pc, .Lv2		/* 0x08: SVC */
 	ldr		pc, .Lv3		/* 0x0C: Prefetch abort */
@@ -72,14 +72,12 @@ _tcm_start:
 	ldr		pc, .Lv6		/* 0x18: IRQ */
 	ldr		pc, .Lv7		/* 0x1C: FIQ */
 
-/* Literal pool — absolute DDR addresses computed at link time.
- * Each entry holds _vector_start + N*4, i.e. the address of the
- * Nth ARM exception entry in the DDR vector table.  The CPU loads this
- * address into PC and executes the DDR entry, which then dispatches to
- * the real handler via its own LDR PC literal.
+/* Literal pool — 8 × 4 = 32 bytes starting at ATCM offset 0x20.
+ * Reset (.Lv0) points to _atcm_ipi_boot below; all others go directly
+ * to the corresponding DDR NuttX vector entry.
  */
 
-.Lv0:	.long	_vector_start + 0x00	/* Reset    → __start */
+.Lv0:	.long	_atcm_ipi_boot		/* Reset    → ATCM IPI stub then DDR */
 .Lv1:	.long	_vector_start + 0x04	/* Undef    → arm_vectorundefinsn */
 .Lv2:	.long	_vector_start + 0x08	/* SVC      → arm_vectorsvc */
 .Lv3:	.long	_vector_start + 0x0C	/* Prefetch → arm_vectorprefetch */
@@ -87,6 +85,30 @@ _tcm_start:
 .Lv5:	.long	_vector_start + 0x14	/* Reserved → arm_vectoraddrexcptn */
 .Lv6:	.long	_vector_start + 0x18	/* IRQ      → arm_vectorirq */
 .Lv7:	.long	_vector_start + 0x1C	/* FIQ      → arm_vectorfiq */
+
+/* ATCM IPI boot stub — lives at ATCM offset 0x40.
+ * Executes entirely from ATCM before branching to DDR.
+ *
+ * Steps:
+ *  1. IPI kick to APU so Linux can detect that R5F reached ATCM.
+ *  2. Disable the R5F CPU MPU (SCTLR.M bit 0).  The FSBL may configure
+ *     the MPU to restrict DDR access; clearing M removes that restriction.
+ *  3. Jump to DDR _vector_start (resolved by linker to CONFIG_RAM_START).
+ */
+_atcm_ipi_boot:
+	movw		r0, #0x0000
+	movt		r0, #0xFF31		/* r0 = 0xFF310000 (RPU0_TRIG) */
+	movw		r1, #0x0001		/* r1 = bit 0 (APU channel) */
+	str		r1, [r0]		/* IPI → APU_ISR bit 8 set */
+
+	mrc		p15, 0, r2, c1, c0, 0	/* read SCTLR */
+	bic		r2, r2, #1		/* clear M bit (MPU enable) */
+	mcr		p15, 0, r2, c1, c0, 0	/* write SCTLR */
+	isb
+
+	ldr		pc, .Lv_ddr		/* jump to DDR vector table */
+.Lv_ddr:
+	.long	_vector_start + 0x00	/* → DDR reset entry → __start */
 
 	.size	_tcm_start, . - _tcm_start
 	.end
