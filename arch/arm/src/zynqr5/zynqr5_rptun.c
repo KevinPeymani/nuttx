@@ -232,30 +232,19 @@ static int zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
 
   /* Sub-breadcrumbs at RPTUN_DBG_PHASE (0x1ED3FFD0), 0xCB prefix */
 
-  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000001u); /* before up_enable_irq */
+  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000001u); /* callback stored */
 
-  /* Enable GIC interrupt now that callback is registered.  Deferring
-   * up_enable_irq() to here (from zynqr5_rptun_initialize) ensures the
-   * ISR never runs with callback == NULL, which was causing the board to
-   * hang (AppBringUp's context was unrestorable after the early IPI). */
-
-  up_enable_irq(IPI_IRQ);
-
-  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000002u); /* after up_enable_irq */
-
-  /* A53 sent an IPI kick before R5F booted; GICD_ISPENDR[2] bit 1 may
-   * still be set.  If the GIC delivered it early (before this callback
-   * was registered), the ISR already cleared IPI_ISR — so the IPI_ISR
-   * check below would miss it.  Call callback unconditionally to break
-   * the rpmsg_virtio_wait_remote_ready ↔ notify() deadlock regardless
-   * of whether the GIC beat us. */
+  /* GIC IPI is intentionally NOT enabled (see zynqr5_rptun_initialize comment).
+   * IPI delivery uses zynqr5_rptun_ipi_check() spin-poll exclusively.
+   * Clear any residual IPI_ISR bit from the boot sequence, then drive
+   * callback unconditionally to unblock rpmsg_virtio_wait_remote_ready. */
 
   putreg32(IPI_APU_BIT, IPI_ISR);   /* clear any residual IPI bit (W1C) */
   __asm__ volatile("dsb sy" ::: "memory");
 
-  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000003u); /* before callback() */
+  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000002u); /* before callback() */
   callback(arg, RPTUN_NOTIFY_ALL);
-  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000004u); /* callback returned */
+  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000003u); /* callback returned */
 
   return OK;
 }
@@ -348,6 +337,11 @@ int zynqr5_rptun_initialize(void)
   FAR struct zynqr5_rptun_dev_s *priv = &g_zynqr5_rptun_priv;
   int ret;
 
+  /* Crash-loop counter at 0x1ED3FF20: NOT cleared below, increments each call.
+   * If this reads > 1 from A53, zynqr5_rptun_initialize ran multiple times → crash loop. */
+  *((volatile uint32_t *)0x1ED3FF20u) += 1;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   *((volatile uint32_t *)0x1ED3FF34u) = 0xDB000001u; /* zynqr5_rptun_initialize entered */
   __asm__ volatile("dsb sy" ::: "memory");
 
@@ -385,17 +379,30 @@ int zynqr5_rptun_initialize(void)
   *((volatile uint32_t *)0x1ED3FF28u) = 0xDB000004u; /* after irq_attach */
   __asm__ volatile("dsb sy" ::: "memory");
 
-  /* up_enable_irq(IPI_IRQ) is deferred to register_callback.
-   * Enabling GIC here fires the IPI immediately (A53 kicked R5F at boot,
-   * so GICD_ISPENDR[2] bit 1 is set).  The ISR would run with callback=NULL
-   * (register_callback hasn't been called yet), clear IPI_ISR, and leave
-   * AppBringUp's context unrestorable — the board hangs.
-   * Deferring ensures callback is set before the GIC can deliver the IRQ. */
+  /* NOTE: up_enable_irq(IPI_IRQ) is intentionally NOT called here.
+   *
+   * The LPD_XPPU blocks the R5F from writing to IPI_ISR (0xFF310010),
+   * which is required inside zynqr5_ipi_isr to W1C-clear the pending
+   * interrupt.  Enabling GIC IRQ 65 causes the ISR to fire, hit the
+   * XPPU-blocked write, and take a data abort, crashing the firmware.
+   *
+   * IPI delivery is handled exclusively by the spin-poll in
+   * zynqr5_rptun_ipi_check() (called from rptun_thread's outer loop),
+   * which uses IPI_TRIG writes that ARE permitted by the XPPU.
+   * irq_attach() above remains — zynqr5_ipi_isr is registered but will
+   * never be invoked while IPI_IRQ stays disabled in the GIC.
+   *
+   * History: enabling GIC IPI here was attempted to drain the pending
+   * boot IPI before rptun_thread starts.  The result was a data abort
+   * inside the ISR (IPI_ISR write blocked by XPPU), halting the firmware.
+   * To drain the boot IPI safely, register_callback now calls
+   * IPI_ISR W1C via the spin-poll path (which tolerates the XPPU block). */
 
-  *((volatile uint32_t *)0x1ED3FF24u) = 0xDB000005u; /* after deferred enable */
+  *((volatile uint32_t *)0x1ED3FF24u) = 0xDB000005u; /* after irq_attach / before rptun_init */
   __asm__ volatile("dsb sy" ::: "memory");
 
   ret = rptun_initialize(&priv->rptun);
+
   if (ret == OK)
     {
       rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_INIT_DONE);  /* 0x02 */
