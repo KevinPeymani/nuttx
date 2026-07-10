@@ -86,6 +86,8 @@
 #define RPTUN_DBG_NOTIFY  (RPTUN_DBG_BASE + 0x04u)
 #define RPTUN_DBG_ISR     (RPTUN_DBG_BASE + 0x08u)
 #define RPTUN_DBG_IDLE    (RPTUN_DBG_BASE + 0x0Cu) /* ipi_check call count */
+/* 0x1ED3FFD0: rptun_dev_start phase — reuses DEAD-marker slot (already past by START case) */
+#define RPTUN_DBG_PHASE   0x1ED3FFD0u
 
 /* Step values written to RPTUN_DBG_STEP */
 #define DBG_STEP_INIT_ENTER    0x01u  /* zynqr5_rptun_initialize() entered */
@@ -228,12 +230,18 @@ static int zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
   priv->callback = callback;
   priv->arg      = arg;
 
+  /* Sub-breadcrumbs at RPTUN_DBG_PHASE (0x1ED3FFD0), 0xCB prefix */
+
+  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000001u); /* before up_enable_irq */
+
   /* Enable GIC interrupt now that callback is registered.  Deferring
    * up_enable_irq() to here (from zynqr5_rptun_initialize) ensures the
    * ISR never runs with callback == NULL, which was causing the board to
    * hang (AppBringUp's context was unrestorable after the early IPI). */
 
   up_enable_irq(IPI_IRQ);
+
+  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000002u); /* after up_enable_irq */
 
   /* A53 sent an IPI kick before R5F booted; GICD_ISPENDR[2] bit 1 may
    * still be set.  If the GIC delivered it early (before this callback
@@ -244,7 +252,10 @@ static int zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
 
   putreg32(IPI_APU_BIT, IPI_ISR);   /* clear any residual IPI bit (W1C) */
   __asm__ volatile("dsb sy" ::: "memory");
+
+  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000003u); /* before callback() */
   callback(arg, RPTUN_NOTIFY_ALL);
+  rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000004u); /* callback returned */
 
   return OK;
 }
@@ -354,6 +365,7 @@ int zynqr5_rptun_initialize(void)
   *((volatile uint32_t *)(DBG_IPI_SNAP + 4)) = 0;
   *((volatile uint32_t *)(DBG_IPI_SNAP + 8)) = 0;
   *((volatile uint32_t *)(DBG_IPI_SNAP + 12)) = 0;
+  putreg32(0, RPTUN_DBG_PHASE); /* zero rptun_dev_start phase (0x1ED3FFD0) */
   __asm__ volatile("dsb sy" ::: "memory");
 
   rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_INIT_ENTER);  /* 0x01 */

@@ -246,6 +246,11 @@ static void rptun_worker(FAR void *arg)
   switch (priv->cmd)
     {
       case RPTUNIOC_START:
+#ifdef CONFIG_ZYNQR5_RPTUN
+        /* Write state value to 0x1ED3FFC8 (IPI snap area, known-working) */
+        *((volatile uint32_t *)0x1ED3FFC8u) = (uint32_t)priv->rproc.state;
+        __asm__ volatile("dsb sy" ::: "memory");
+#endif
         if (priv->rproc.state == RPROC_OFFLINE)
           {
             rptun_dev_start(&priv->rproc);
@@ -317,6 +322,9 @@ static int rptun_thread(int argc, FAR char *argv[])
        * but we always call ipi_check ourselves so we don't depend on idle. */
       void zynqr5_rptun_ipi_check(void);
       void zynqr5_timer_poll(void);
+      /* DBG: outer-loop heartbeat — increments each spin so A53 can confirm
+       * firmware is alive after reload */
+      *((volatile uint32_t *)0x1ED3FFECu) += 1;
       zynqr5_rptun_ipi_check();
       zynqr5_timer_poll();
       /* DBG: 0x1ED3FFD8 = 0xBB.. → spinning on semrx */
@@ -660,11 +668,21 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
   unsigned int role = RPMSG_REMOTE;
   int ret;
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000010u; /* entered rptun_dev_start */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   ret = remoteproc_config(rproc, NULL);
   if (ret)
     {
       return ret;
     }
+
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000011u; /* remoteproc_config OK */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
 
 #ifdef CONFIG_RPTUN_LOADER
   if (RPTUN_GET_FIRMWARE(priv->dev))
@@ -698,6 +716,11 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
         {
           return ret;
         }
+
+#ifdef CONFIG_ZYNQR5_RPTUN
+      *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000012u; /* set_rsc_table OK */
+      __asm__ volatile("dsb sy" ::: "memory");
+#endif
     }
 
   /* Update resource table on MASTER side */
@@ -770,11 +793,21 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
 
   /* Remote proc create */
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000013u; /* about to create_virtio */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   vdev = remoteproc_create_virtio(rproc, 0, role, NULL);
   if (!vdev)
     {
       return -ENOMEM;
     }
+
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000014u; /* create_virtio OK */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
 
   if (priv->pool[1].base)
     {
@@ -802,6 +835,11 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
       return ret;
     }
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000015u; /* rpmsg_init_vdev OK */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   priv->rvdev.rdev.ns_unbind_cb = rptun_ns_unbind;
 
   /* Remote proc start */
@@ -813,13 +851,28 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
       return ret;
     }
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000016u; /* remoteproc_start OK */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   /* Register callback to mbox for receiving remote message */
 
   RPTUN_REGISTER_CALLBACK(priv->dev, rptun_callback, priv);
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000001u; /* past REGISTER_CALLBACK */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   /* Broadcast device_created to all registers */
 
   nxrmutex_lock(&g_rptun_lockcb);
+
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000002u; /* lockcb acquired */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
 
   metal_list_for_each(&g_rptun_cb, node)
     {
@@ -832,16 +885,34 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
 
   nxrmutex_unlock(&g_rptun_lockcb);
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000003u; /* lockcb released */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   /* Add priv to list */
 
   nxrmutex_lock(&g_rptun_lockpriv);
   metal_list_add_tail(&g_rptun_priv, &priv->node);
   nxrmutex_unlock(&g_rptun_lockpriv);
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000004u; /* lockpriv done */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   virtqueue_enable_cb(priv->rvdev.svq);
 
 #ifdef CONFIG_RPTUN_PING
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000005u; /* about to ping_init */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
   rptun_ping_init(&priv->rvdev, &priv->ping);
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000006u; /* ping_init returned */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
 #endif
   return 0;
 }
