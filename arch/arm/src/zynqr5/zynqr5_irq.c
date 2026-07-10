@@ -67,6 +67,38 @@ void up_irqinitialize(void)
   putreg32(0xBEEF0011u, 0x1ED3FFCCu);
   putreg32(iidr,        0x1ED3FFD0u);     /* store IIDR for inspection */
 
+  /* Clear stale active interrupts left by a previous firmware run that was
+   * stopped before writing GICC_EOIR.  The GIC retains "active" state across
+   * remoteproc stop/start, leaving GICC_RPR stuck at the stale priority and
+   * blocking all new interrupts at the same or lower (numerically higher)
+   * priority level.
+   *
+   * Fix: for each set bit in GICD_ISACTIVER write GICC_EOIR (drops RPR),
+   * then write GICD_ICACTIVER to clear the distributor active state. */
+  {
+    uint32_t i;
+    for (i = 0u; i < 5u; i++)
+      {
+        uint32_t activer = getreg32(0xF9000300u + i * 4u); /* GICD_ISACTIVER[i] */
+        uint32_t tmp = activer;
+        while (tmp)
+          {
+            uint32_t bit = (uint32_t)__builtin_ctz(tmp);
+            putreg32(i * 32u + bit, 0xF9001010u);          /* GICC_EOIR */
+            tmp &= tmp - 1u;
+          }
+        if (activer)
+          {
+            putreg32(0xFFFFFFFFu, 0xF9000380u + i * 4u);   /* GICD_ICACTIVER[i] */
+          }
+      }
+  }
+
+  /* Snapshot GICC_RPR after active-interrupt clear — should now be 0xFF (idle).
+   * Readable from A53: devmem 0x1ED3FFA8 32 */
+  putreg32(getreg32(0xF9001014u), 0x1ED3FFA8u);  /* GICC_RPR post-clear */
+  __asm__ volatile("dsb sy" ::: "memory");
+
   /* Attempt to initialize the RPU GIC (PL390 at 0xF9000000).
    *
    * NOTE: As of 2026-07-09, LPD_XPPU silently discards all writes to
@@ -90,6 +122,15 @@ void up_irqinitialize(void)
   arm_gic0_initialize();
   arm_gic_initialize();
   up_irq_enable();
+
+  /* GIC post-init snapshot — written once, never zeroed by rptun_init.
+   * Readable from A53: devmem 0x1ED3FFA0 32 (GICD_TYPER)
+   *                    devmem 0x1ED3FFA4 32 (GICD_CTLR)
+   *                    devmem 0x1ED3FFAC 32 (GICC_PMR) */
+  putreg32(getreg32(0xF9000004u), 0x1ED3FFA0u);  /* GICD_TYPER  */
+  putreg32(getreg32(0xF9000000u), 0x1ED3FFA4u);  /* GICD_CTLR   */
+  putreg32(getreg32(0xF9001004u), 0x1ED3FFACu);  /* GICC_PMR    */
+  __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
   putreg32(0xBEEF0012u, 0x1ED3FFCCu);

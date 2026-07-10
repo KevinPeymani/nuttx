@@ -235,10 +235,10 @@ static void rptun_worker(FAR void *arg)
   FAR struct rptun_priv_s *priv = arg;
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  /* DBG: 0x3ED3FFD4 = WRKR count — incremented on every rptun_worker entry */
+  /* DBG: 0x1ED3FFD4 = WRKR count — incremented on every rptun_worker entry */
   {
-    uint32_t n = *((volatile uint32_t *)0x3ED3FFD4u);
-    *((volatile uint32_t *)0x3ED3FFD4u) = n + 1;
+    uint32_t n = *((volatile uint32_t *)0x1ED3FFD4u);
+    *((volatile uint32_t *)0x1ED3FFD4u) = n + 1;
     __asm__ volatile("dsb sy" ::: "memory");
   }
 #endif
@@ -288,8 +288,12 @@ static int rptun_thread(int argc, FAR char *argv[])
   FAR struct rptun_priv_s *priv;
 
 #ifdef CONFIG_ZYNQR5_RPTUN
+  /* Pre-sentinel: written before ANYTHING else — if this fires, thread IS running. */
+  *((volatile uint32_t *)0x1ED3FF64u) = 0xFEEDF00Du;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   /* Sentinel A: written before any priv access to confirm thread entry */
-  *((volatile uint32_t *)0x3ED3FFD0u) = 0xDEAD0001u;
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xDEAD0001u;
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -299,14 +303,15 @@ static int rptun_thread(int argc, FAR char *argv[])
 #ifdef CONFIG_ZYNQR5_RPTUN
   /* Sentinel B: written after priv is set up — if A is set but B is not,
    * the crash is in argv[2] parsing or priv->tid write. */
-  *((volatile uint32_t *)0x3ED3FFD0u) = 0xDEAD0002u;
+  *((volatile uint32_t *)0x1ED3FFD0u) = 0xDEAD0002u;
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
   while (1)
     {
 #ifdef CONFIG_ZYNQR5_RPTUN
-      /* XMPU_FPD blocks GIC on the R5F, so IPI cannot be routed as an IRQ.
+      /* LPD_XPPU blocks GIC writes on the R5F, so IPI cannot be routed as
+       * an IRQ until the XPPU aperture is unlocked (see ldp-xppu-gic-fix.md).
        * Spin-poll the IPI register instead of blocking indefinitely.
        * sched_yield() lets same-priority tasks (HPWORK) run between polls,
        * but we always call ipi_check ourselves so we don't depend on idle. */
@@ -314,17 +319,39 @@ static int rptun_thread(int argc, FAR char *argv[])
       void zynqr5_timer_poll(void);
       zynqr5_rptun_ipi_check();
       zynqr5_timer_poll();
-      /* DBG: 0x3ED3FFD8 = 0xBB.. → spinning on semrx */
-      *((volatile uint32_t *)0x3ED3FFD8u) = 0xBBBBBBBBu;
+      /* DBG: 0x1ED3FFD8 = 0xBB.. → spinning on semrx */
+      *((volatile uint32_t *)0x1ED3FFD8u) = 0xBBBBBBBBu;
       __asm__ volatile("dsb sy" ::: "memory");
       while (nxsem_trywait(&priv->semrx) != OK)
         {
+          /* Snapshot GIC distributor state from R5F while spinning.
+           * 0x1ED3FF90: CPSR (bit7=I, 0=IRQs enabled)
+           * 0x1ED3FF88: GICD_ISENABLER[2]  (0xF9000108, bit7=IRQ71 TTC)
+           * 0x1ED3FF84: GICD_ISPENDR[2]    (0xF9000208, bit7=TTC pending)
+           * 0x1ED3FF80: GICC_IAR           (0xF900100C, 0x3FF=no IRQ)
+           * 0x1ED3FF7C: GICC_CTLR          (0xF9001000, bit0=enable) */
+          uint32_t cpsr_snap;
+          __asm__ volatile("mrs %0, cpsr" : "=r" (cpsr_snap));
+          *((volatile uint32_t *)0x1ED3FF90u) = cpsr_snap;
+          *((volatile uint32_t *)0x1ED3FF88u) = *((volatile uint32_t *)0xF9000108u);
+          *((volatile uint32_t *)0x1ED3FF84u) = *((volatile uint32_t *)0xF9000208u);
+          *((volatile uint32_t *)0x1ED3FF78u) = *((volatile uint32_t *)0xF9000308u); /* ISACTIVER[2] */
+          *((volatile uint32_t *)0x1ED3FF74u) = *((volatile uint32_t *)0xF9001014u); /* GICC_RPR */
+          uint32_t iar_snap = *((volatile uint32_t *)0xF900100Cu);
+          *((volatile uint32_t *)0x1ED3FF80u) = iar_snap;
+          *((volatile uint32_t *)0x1ED3FF7Cu) = *((volatile uint32_t *)0xF9001000u);
+          if ((iar_snap & 0x3FFu) != 0x3FFu)
+            {
+              *((volatile uint32_t *)0x1ED3FF94u) = iar_snap;
+              *((volatile uint32_t *)0x1ED3FF8Cu) += 1;
+              *((volatile uint32_t *)0xF9001010u) = iar_snap;  /* GICC_EOIR */
+            }
           zynqr5_rptun_ipi_check();
           zynqr5_timer_poll();
           sched_yield();
         }
       /* DBG: 0xCC.. → semrx acquired, entering rptun_worker */
-      *((volatile uint32_t *)0x3ED3FFD8u) = 0xCCCCCCCCu;
+      *((volatile uint32_t *)0x1ED3FFD8u) = 0xCCCCCCCCu;
       __asm__ volatile("dsb sy" ::: "memory");
 #else
       nxsem_wait_uninterruptible(&priv->semrx);
@@ -501,11 +528,11 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
 
 #ifdef CONFIG_ZYNQR5_RPTUN
   /* Spin-poll semtx: we cannot block indefinitely because idle may never
-   * run to call ipi_check (XMPU blocks GIC; ipi_check posts semtx). */
+   * run to call ipi_check (LPD_XPPU blocks GIC writes; ipi_check posts semtx). */
   {
     void zynqr5_rptun_ipi_check(void);
     void zynqr5_timer_poll(void);
-    *((volatile uint32_t *)0x3ED3FFD8u) = 0xEEEEEEEEu;  /* DBG: in notify_wait */
+    *((volatile uint32_t *)0x1ED3FFD8u) = 0xEEEEEEEEu;  /* DBG: in notify_wait */
     __asm__ volatile("dsb sy" ::: "memory");
     while (nxsem_trywait(&priv->semtx) != OK)
       {
@@ -514,7 +541,7 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
         sched_yield();
       }
   }
-  *((volatile uint32_t *)0x3ED3FFD8u) = 0xFFFFFFFFu;  /* DBG: semtx acquired */
+  *((volatile uint32_t *)0x1ED3FFD8u) = 0xFFFFFFFFu;  /* DBG: semtx acquired */
   __asm__ volatile("dsb sy" ::: "memory");
 #else
   nxsem_wait(&priv->semtx);
@@ -1240,13 +1267,26 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
   char name[32];
   int ret;
 
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FF4Cu) = 0xAA000001u; /* rptun_initialize entered */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
+
   ret = metal_init(&params);
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FF48u) = (uint32_t)ret; /* metal_init retval */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
   if (ret < 0)
     {
       return ret;
     }
 
   priv = kmm_zalloc(sizeof(struct rptun_priv_s));
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FF44u) = (uint32_t)priv; /* kmm_zalloc result (0=NULL) */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
   if (priv == NULL)
     {
       ret = -ENOMEM;
@@ -1258,13 +1298,29 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
   remoteproc_init(&priv->rproc, &g_rptun_ops, priv);
   metal_list_init(&priv->bind);
   nxrmutex_init(&priv->lock);
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FF40u) = 0xAA000003u; /* remoteproc_init done */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
 
   snprintf(name, sizeof(name), "/dev/rptun/%s", RPTUN_GET_CPUNAME(dev));
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FF5Cu) = 0xBB000001u; /* before register_driver */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
   ret = register_driver(name, &g_rptun_devops, 0222, priv);
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FF58u) = (uint32_t)ret; /* register_driver retval */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
   if (ret < 0)
     {
       goto err_driver;
     }
+#ifdef CONFIG_ZYNQR5_RPTUN
+  *((volatile uint32_t *)0x1ED3FF54u) = 0xBB000002u; /* register_driver OK */
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
 
 #ifdef CONFIG_RPTUN_WORKQUEUE
   if (RPTUN_IS_AUTOSTART(dev))
@@ -1292,6 +1348,11 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
 
   ret = kthread_create("rptun", CONFIG_RPTUN_PRIORITY,
                        CONFIG_RPTUN_STACKSIZE, rptun_thread, argv);
+#ifdef CONFIG_ZYNQR5_RPTUN
+  /* kthread_create marker: positive = thread PID, negative = error */
+  *((volatile uint32_t *)0x1ED3FF60u) = (uint32_t)ret;
+  __asm__ volatile("dsb sy" ::: "memory");
+#endif
   if (ret < 0)
     {
       unregister_driver(name);
@@ -1332,7 +1393,17 @@ int rptun_panic(FAR const char *cpuname)
 int rptun_buffer_nused(FAR struct rpmsg_virtio_device *rvdev, bool rx)
 {
   FAR struct virtqueue *vq = rx ? rvdev->rvq : rvdev->svq;
-  uint16_t nused = vq->vq_ring.avail->idx - vq->vq_ring.used->idx;
+  uint16_t nused;
+
+  /* Guard: virtio device not yet initialized (IPI can arrive before rptun_thread
+   * runs rptun_dev_start).  Report 0 used buffers rather than dereferencing NULL. */
+
+  if (vq == NULL)
+    {
+      return 0;
+    }
+
+  nused = vq->vq_ring.avail->idx - vq->vq_ring.used->idx;
 
   if ((rpmsg_virtio_get_role(rvdev) == RPMSG_HOST) ^ rx)
     {

@@ -121,15 +121,26 @@
 
 static int zynqr5_timer_interrupt(int irq, FAR void *context, FAR void *arg)
 {
-  /* Reading TTC_INT_STATUS clears the interval flag. */
+  /* Checkpoint A: ISR entered */
+  *((volatile uint32_t *)0x1ED3FF70u) += 1;
+  __asm__ volatile("dsb sy" ::: "memory");
 
+  /* Reading TTC_INT_STATUS clears the interval flag. */
   (void)getreg32(TTC_INT_STATUS);
 
   /* Alive counter at end of DDR carveout — readable from A53 via devmem. */
-
   *((volatile uint32_t *)0x1ED3FFDCu) += 1;
 
+  /* Checkpoint B: before nxsched_process_timer */
+  *((volatile uint32_t *)0x1ED3FF6Cu) += 1;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   nxsched_process_timer();
+
+  /* Checkpoint C: after nxsched_process_timer */
+  *((volatile uint32_t *)0x1ED3FF68u) += 1;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   return OK;
 }
 
@@ -173,6 +184,13 @@ void up_timer_initialize(void)
 
   irq_attach(ZYNQR5_IRQ_TTC1_0, zynqr5_timer_interrupt, NULL);
   up_enable_irq(ZYNQR5_IRQ_TTC1_0);
+
+  /* Post-enable snapshot: GICD_ISENABLER[2] and GICD_ITARGETSR[17].
+   * Readable from A53: devmem 0x1ED3FF98 32 (ISENABLER[2], bit 7 = TTC)
+   *                    devmem 0x1ED3FF9C 32 (ITARGETSR[17], byte 3 = IRQ 71) */
+  putreg32(getreg32(0xF9000108u), 0x1ED3FF98u);  /* GICD_ISENABLER[2] */
+  putreg32(getreg32(0xF9000844u), 0x1ED3FF9Cu);  /* GICD_ITARGETSR[17] */
+  __asm__ volatile("dsb sy" ::: "memory");
 }
 
 /****************************************************************************

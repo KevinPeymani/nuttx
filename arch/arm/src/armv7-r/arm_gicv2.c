@@ -374,6 +374,13 @@ uint32_t *arm_decodeirq(uint32_t *regs)
   regval = getreg32(GIC_ICCIAR);
   irq = (regval & GIC_ICCIAR_INTID_MASK) >> GIC_ICCIAR_INTID_SHIFT;
 
+  /* Snapshot: GICC_IAR value and IRQ number at 0x1ED3FF20/1C.
+   * Readable from A53: devmem 0x1ED3FF20 32 (GICC_IAR raw)
+   *                    devmem 0x1ED3FF1C 32 (irq) */
+  *((volatile uint32_t *)0x1ED3FF20u) = regval;
+  *((volatile uint32_t *)0x1ED3FF1Cu) = (uint32_t)irq;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   /* Ignore spurions IRQs.  ICCIAR will report 1023 if there is no pending
    * interrupt.
    */
@@ -386,9 +393,19 @@ uint32_t *arm_decodeirq(uint32_t *regs)
       regs = arm_doirq(irq, regs);
     }
 
+  /* Marker before GICC_EOIR write — if 0x1ED3FF18 is written but
+   * 0x1ED3FF14 is not, the fault is in the EOIR write itself. */
+  *((volatile uint32_t *)0x1ED3FF18u) = 0xEE000001u;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   /* Write to the end-of-interrupt register */
 
   putreg32(regval, GIC_ICCEOIR);
+
+  /* Marker after GICC_EOIR write. */
+  *((volatile uint32_t *)0x1ED3FF14u) = 0xEE000002u;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   return regs;
 }
 

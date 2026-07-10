@@ -228,17 +228,23 @@ static int zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
   priv->callback = callback;
   priv->arg      = arg;
 
-  /* If A53's IPI is still pending in RPU0_ISR (missed before callback was
-   * registered), fire callback now so rptun_dev_start() can proceed.
-   * Clear ISR but do NOT write IPI_TRIG here: writing TRIG fires A53 IRQ#15
-   * which triggers ENQUIRY_DIRQ in the mbox handler and disables PL0_IER,
-   * preventing notify()'s later TRIG write from firing IRQ#15 for the NS. */
+  /* Enable GIC interrupt now that callback is registered.  Deferring
+   * up_enable_irq() to here (from zynqr5_rptun_initialize) ensures the
+   * ISR never runs with callback == NULL, which was causing the board to
+   * hang (AppBringUp's context was unrestorable after the early IPI). */
 
-  if (getreg32(IPI_ISR) & IPI_APU_BIT)
-    {
-      putreg32(IPI_APU_BIT, IPI_ISR);
-      callback(arg, RPTUN_NOTIFY_ALL);
-    }
+  up_enable_irq(IPI_IRQ);
+
+  /* A53 sent an IPI kick before R5F booted; GICD_ISPENDR[2] bit 1 may
+   * still be set.  If the GIC delivered it early (before this callback
+   * was registered), the ISR already cleared IPI_ISR — so the IPI_ISR
+   * check below would miss it.  Call callback unconditionally to break
+   * the rpmsg_virtio_wait_remote_ready ↔ notify() deadlock regardless
+   * of whether the GIC beat us. */
+
+  putreg32(IPI_APU_BIT, IPI_ISR);   /* clear any residual IPI bit (W1C) */
+  __asm__ volatile("dsb sy" ::: "memory");
+  callback(arg, RPTUN_NOTIFY_ALL);
 
   return OK;
 }
@@ -331,6 +337,9 @@ int zynqr5_rptun_initialize(void)
   FAR struct zynqr5_rptun_dev_s *priv = &g_zynqr5_rptun_priv;
   int ret;
 
+  *((volatile uint32_t *)0x1ED3FF34u) = 0xDB000001u; /* zynqr5_rptun_initialize entered */
+  __asm__ volatile("dsb sy" ::: "memory");
+
   /* Zero the debug area so A53 can detect fresh writes. */
 
   putreg32(0, RPTUN_DBG_STEP);
@@ -349,12 +358,30 @@ int zynqr5_rptun_initialize(void)
 
   rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_INIT_ENTER);  /* 0x01 */
 
+  *((volatile uint32_t *)0x1ED3FF30u) = 0xDB000002u; /* after STEP=0x01 */
+  __asm__ volatile("dsb sy" ::: "memory");
+
   priv->rptun.ops = &g_zynqr5_rptun_ops;
 
   putreg32(IPI_APU_BIT, IPI_IER);
 
+  *((volatile uint32_t *)0x1ED3FF2Cu) = 0xDB000003u; /* after IPI_IER enable */
+  __asm__ volatile("dsb sy" ::: "memory");
+
   irq_attach(IPI_IRQ, zynqr5_ipi_isr, priv);
-  up_enable_irq(IPI_IRQ);
+
+  *((volatile uint32_t *)0x1ED3FF28u) = 0xDB000004u; /* after irq_attach */
+  __asm__ volatile("dsb sy" ::: "memory");
+
+  /* up_enable_irq(IPI_IRQ) is deferred to register_callback.
+   * Enabling GIC here fires the IPI immediately (A53 kicked R5F at boot,
+   * so GICD_ISPENDR[2] bit 1 is set).  The ISR would run with callback=NULL
+   * (register_callback hasn't been called yet), clear IPI_ISR, and leave
+   * AppBringUp's context unrestorable — the board hangs.
+   * Deferring ensures callback is set before the GIC can deliver the IRQ. */
+
+  *((volatile uint32_t *)0x1ED3FF24u) = 0xDB000005u; /* after deferred enable */
+  __asm__ volatile("dsb sy" ::: "memory");
 
   ret = rptun_initialize(&priv->rptun);
   if (ret == OK)
