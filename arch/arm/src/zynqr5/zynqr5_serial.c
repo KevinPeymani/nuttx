@@ -92,32 +92,37 @@
 #define UART_INT_DMSI       (1U << 9)   /* Delta modem status */
 
 /* Debug breadcrumbs — readable from A53 via devmem, free scratch words
- * between the timer-ISR checkpoints (0x1ED3FF70) and the GIC post-init
- * snapshot (0x1ED3FF98).  Used only to confirm the UART RX/TX ISR path is
+ * between the timer-ISR checkpoints (0x1EEFFF70) and the GIC post-init
+ * snapshot (0x1EEFFF98).  Used only to confirm the UART RX/TX ISR path is
  * actually reached now that GIC writes are known to stick (see
  * boards/amd/kria-kv260/boot-xmpu-fix-plan.md). */
 
-#define UART_DBG_BASE       0x1ED3FF40u
+#define UART_DBG_BASE       0x1EEFFF40u
 #define UART_DBG_RXCNT      (UART_DBG_BASE + 0x00u)  /* RX/TOUT ISR hits */
 #define UART_DBG_TXCNT      (UART_DBG_BASE + 0x04u)  /* TEMPTY ISR hits */
 #define UART_DBG_ISR        (UART_DBG_BASE + 0x08u)  /* last ISR reg value */
 #define UART_DBG_RXBYTE     (UART_DBG_BASE + 0x0Cu)  /* last byte received */
 #define UART_DBG_IRQ        (UART_DBG_BASE + 0x10u)  /* IRQ number of last ISR */
 
-/* 0x1ED3FF00-0x1ED3FF1C: separate free block (0x1ED3FF20 onward collides
+/* 0x1EEFFF00-0x1EEFFF1C: separate free block (0x1EEFFF20 onward collides
  * with drivers/rptun/rptun.c's own breadcrumbs — verified by grepping both
  * files before picking addresses, do the same before adding more).
  *
- * CAVEAT (2026-07-21): 0x1ED3FF00/04/08 (used below) read back stable on
- * hardware, but 0x1ED3FF10 — nominally free by this same claim — read back
- * rapidly-changing garbage in an unrelated timer debug session despite no
- * code writing to it. This "free block" may not actually be safely
- * reserved DDR; prefer picking new addresses from the RPTUN block
- * (0x1ED3FF20-0x1ED3FFFF in drivers/rptun/rptun.c / zynqr5_rptun.c) instead,
- * which has tested stable, until this is understood. */
-#define UART_DBG_SERIALINIT 0x1ED3FF00u  /* arm_serialinit() reached */
-#define UART_DBG_SETUP_BASE 0x1ED3FF04u  /* last uartbase passed to setup() */
-#define UART_DBG_SETUP_CNT  0x1ED3FF08u  /* zynqr5_setup() call count */
+ * CAVEAT (originally observed 2026-07-21 at the pre-carveout-grow addresses
+ * 0x1ED3FF00/04/08/10 — same offsets within the debug scratchpad, shifted
+ * here to 0x1EEFFF00/04/08/10 by the 2026-07-21 later rproc_0_reserved
+ * grow; NOT yet re-verified at the new physical location): 0x1EEFFF00/04/08
+ * (used below) read back stable on hardware, but 0x1EEFFF10 — nominally
+ * free by this same claim — read back rapidly-changing garbage in an
+ * unrelated timer debug session despite no code writing to it. This "free
+ * block" may not actually be safely reserved DDR; prefer picking new
+ * addresses from the RPTUN block (0x1EEFFF20-0x1EEFFFFF in
+ * drivers/rptun/rptun.c / zynqr5_rptun.c) instead, which has tested stable,
+ * until this is understood. Re-confirm both findings at the new addresses
+ * before relying on them. */
+#define UART_DBG_SERIALINIT 0x1EEFFF00u  /* arm_serialinit() reached */
+#define UART_DBG_SETUP_BASE 0x1EEFFF04u  /* last uartbase passed to setup() */
+#define UART_DBG_SETUP_CNT  0x1EEFFF08u  /* zynqr5_setup() call count */
 
 /****************************************************************************
  * Private Types

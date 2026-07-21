@@ -53,7 +53,7 @@
 void arm_boot(void)
 {
   /* Breadcrumb: arm_boot() entered (after arm_head.S + arm_data_initialize) */
-  *((volatile uint32_t *)0x1ED3FFB0u) = 0xA0010001u;
+  *((volatile uint32_t *)0x1EEFFFB0u) = 0xA0010001u;
 
   /* Enable the FPU so floating-point operations can be used before nx_start
    * configures the FPU context for each task.
@@ -62,7 +62,7 @@ void arm_boot(void)
   arm_fpuconfig();
 
   /* Breadcrumb: arm_fpuconfig() survived */
-  *((volatile uint32_t *)0x1ED3FFB0u) = 0xA0010002u;
+  *((volatile uint32_t *)0x1EEFFFB0u) = 0xA0010002u;
 
   /* Configure the early debug UART console (polls TX FIFO, no interrupt).
    * The FSBL/U-Boot has already set the baud-rate divisors; we just ensure
@@ -75,7 +75,7 @@ void arm_boot(void)
 
   zynqr5_board_initialize();
 
-  *((volatile uint32_t *)0x1ED3FFA8u) = 0xBB000001u;  /* arm_boot: before nx_start */
+  *((volatile uint32_t *)0x1EEFFFA8u) = 0xBB000001u;  /* arm_boot: before nx_start */
 
   /* Hand control to the NuttX kernel. */
 

@@ -128,17 +128,17 @@
 
 /* TEMP DEBUG (post-26x-tick-fix sanity check, 2026-07-21): uptime breadcrumb.
  *
- * 0x1ED3FF38 does not collide with any address found by grepping for
- * 0x1ED3FF across every .c file under arch/arm/src/zynqr5 plus
+ * 0x1EEFFF38 does not collide with any address found by grepping for
+ * 0x1EEFFF across every .c file under arch/arm/src/zynqr5 plus
  * drivers/rptun/rptun.c (nearest neighbours are zynqr5_rptun.c's
- * 0x1ED3FF34 and 0x1ED3FF40)
- * and was picked from inside the RPTUN debug block (0x1ED3FF20-0x1ED3FFFF)
- * rather than the UART_DBG "separate free block" at 0x1ED3FF00-0x1ED3FF1C
+ * 0x1EEFFF34 and 0x1EEFFF40)
+ * and was picked from inside the RPTUN debug block (0x1EEFFF20-0x1EEFFFFF)
+ * rather than the UART_DBG "separate free block" at 0x1EEFFF00-0x1EEFFF1C
  * (zynqr5_serial.c) on purpose: on-hardware testing found the latter
- * reads back *unstable*, rapidly-changing garbage at 0x1ED3FF10 even
+ * reads back *unstable*, rapidly-changing garbage at 0x1EEFFF10 even
  * though nothing in this codebase writes there — i.e. that "free block"
  * claim is unverified/wrong and the underlying DDR word is apparently not
- * safely reserved. 0x1ED3FF38, by contrast, read back a stable constant
+ * safely reserved. 0x1EEFFF38, by contrast, read back a stable constant
  * across repeated devmem reads before this breadcrumb was added, matching
  * the behavior of the other long-lived breadcrumbs in this block.
  *
@@ -147,10 +147,10 @@
  * Since nxsched_process_timer() (called immediately below, once per ISR
  * entry) is exactly what advances NuttX's own idea of elapsed ticks, this
  * counter is a faithful proxy for "seconds since boot, as NuttX believes
- * it" — read from the A53 side via `devmem 0x1ED3FF38 32` and compare
+ * it" — read from the A53 side via `devmem 0x1EEFFF38 32` and compare
  * against wall-clock time measured independently over SSH.
  */
-#define UPTIME_DBG_SECONDS   0x1ED3FF38u
+#define UPTIME_DBG_SECONDS   0x1EEFFF38u
 #define TICKS_PER_SEC        (1000000UL / CONFIG_USEC_PER_TICK)
 
 /****************************************************************************
@@ -162,23 +162,23 @@ static int zynqr5_timer_interrupt(int irq, FAR void *context, FAR void *arg)
   static uint32_t g_uptime_tick_count;
 
   /* Checkpoint A: ISR entered */
-  *((volatile uint32_t *)0x1ED3FF70u) += 1;
+  *((volatile uint32_t *)0x1EEFFF70u) += 1;
   __asm__ volatile("dsb sy" ::: "memory");
 
   /* Reading TTC_INT_STATUS clears the interval flag. */
   (void)getreg32(TTC_INT_STATUS);
 
   /* Alive counter at end of DDR carveout — readable from A53 via devmem. */
-  *((volatile uint32_t *)0x1ED3FFDCu) += 1;
+  *((volatile uint32_t *)0x1EEFFFDCu) += 1;
 
   /* Checkpoint B: before nxsched_process_timer */
-  *((volatile uint32_t *)0x1ED3FF6Cu) += 1;
+  *((volatile uint32_t *)0x1EEFFF6Cu) += 1;
   __asm__ volatile("dsb sy" ::: "memory");
 
   nxsched_process_timer();
 
   /* Checkpoint C: after nxsched_process_timer */
-  *((volatile uint32_t *)0x1ED3FF68u) += 1;
+  *((volatile uint32_t *)0x1EEFFF68u) += 1;
   __asm__ volatile("dsb sy" ::: "memory");
 
   /* TEMP DEBUG: uptime-in-seconds breadcrumb — see UPTIME_DBG_SECONDS. */
@@ -234,10 +234,10 @@ void up_timer_initialize(void)
   up_enable_irq(ZYNQR5_IRQ_TTC1_0);
 
   /* Post-enable snapshot: GICD_ISENABLER[2] and GICD_ITARGETSR[17].
-   * Readable from A53: devmem 0x1ED3FF98 32 (ISENABLER[2], bit 7 = TTC)
-   *                    devmem 0x1ED3FF9C 32 (ITARGETSR[17], byte 3 = IRQ 71) */
-  putreg32(getreg32(0xF9000108u), 0x1ED3FF98u);  /* GICD_ISENABLER[2] */
-  putreg32(getreg32(0xF9000844u), 0x1ED3FF9Cu);  /* GICD_ITARGETSR[17] */
+   * Readable from A53: devmem 0x1EEFFF98 32 (ISENABLER[2], bit 7 = TTC)
+   *                    devmem 0x1EEFFF9C 32 (ITARGETSR[17], byte 3 = IRQ 71) */
+  putreg32(getreg32(0xF9000108u), 0x1EEFFF98u);  /* GICD_ISENABLER[2] */
+  putreg32(getreg32(0xF9000844u), 0x1EEFFF9Cu);  /* GICD_ITARGETSR[17] */
   __asm__ volatile("dsb sy" ::: "memory");
 }
 

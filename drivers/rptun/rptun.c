@@ -235,10 +235,10 @@ static void rptun_worker(FAR void *arg)
   FAR struct rptun_priv_s *priv = arg;
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  /* DBG: 0x1ED3FFD4 = WRKR count — incremented on every rptun_worker entry */
+  /* DBG: 0x1EEFFFD4 = WRKR count — incremented on every rptun_worker entry */
   {
-    uint32_t n = *((volatile uint32_t *)0x1ED3FFD4u);
-    *((volatile uint32_t *)0x1ED3FFD4u) = n + 1;
+    uint32_t n = *((volatile uint32_t *)0x1EEFFFD4u);
+    *((volatile uint32_t *)0x1EEFFFD4u) = n + 1;
     __asm__ volatile("dsb sy" ::: "memory");
   }
 #endif
@@ -247,8 +247,8 @@ static void rptun_worker(FAR void *arg)
     {
       case RPTUNIOC_START:
 #ifdef CONFIG_ZYNQR5_RPTUN
-        /* Write state value to 0x1ED3FFC8 (IPI snap area, known-working) */
-        *((volatile uint32_t *)0x1ED3FFC8u) = (uint32_t)priv->rproc.state;
+        /* Write state value to 0x1EEFFFC8 (IPI snap area, known-working) */
+        *((volatile uint32_t *)0x1EEFFFC8u) = (uint32_t)priv->rproc.state;
         __asm__ volatile("dsb sy" ::: "memory");
 #endif
         if (priv->rproc.state == RPROC_OFFLINE)
@@ -294,11 +294,11 @@ static int rptun_thread(int argc, FAR char *argv[])
 
 #ifdef CONFIG_ZYNQR5_RPTUN
   /* Pre-sentinel: written before ANYTHING else — if this fires, thread IS running. */
-  *((volatile uint32_t *)0x1ED3FF64u) = 0xFEEDF00Du;
+  *((volatile uint32_t *)0x1EEFFF64u) = 0xFEEDF00Du;
   __asm__ volatile("dsb sy" ::: "memory");
 
   /* Sentinel A: written before any priv access to confirm thread entry */
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xDEAD0001u;
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xDEAD0001u;
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -308,7 +308,7 @@ static int rptun_thread(int argc, FAR char *argv[])
 #ifdef CONFIG_ZYNQR5_RPTUN
   /* Sentinel B: written after priv is set up — if A is set but B is not,
    * the crash is in argv[2] parsing or priv->tid write. */
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xDEAD0002u;
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xDEAD0002u;
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -326,34 +326,34 @@ static int rptun_thread(int argc, FAR char *argv[])
       void zynqr5_timer_poll(void);
       /* DBG: outer-loop heartbeat — increments each spin so A53 can confirm
        * firmware is alive after reload */
-      *((volatile uint32_t *)0x1ED3FFECu) += 1;
+      *((volatile uint32_t *)0x1EEFFFECu) += 1;
       zynqr5_rptun_ipi_check();
       zynqr5_timer_poll();
-      /* DBG: 0x1ED3FFD8 = 0xBB.. → spinning on semrx */
-      *((volatile uint32_t *)0x1ED3FFD8u) = 0xBBBBBBBBu;
+      /* DBG: 0x1EEFFFD8 = 0xBB.. → spinning on semrx */
+      *((volatile uint32_t *)0x1EEFFFD8u) = 0xBBBBBBBBu;
       __asm__ volatile("dsb sy" ::: "memory");
       while (nxsem_trywait(&priv->semrx) != OK)
         {
           /* Snapshot GIC distributor state from R5F while spinning.
-           * 0x1ED3FF90: CPSR (bit7=I, 0=IRQs enabled)
-           * 0x1ED3FF88: GICD_ISENABLER[2]  (0xF9000108, bit7=IRQ71 TTC)
-           * 0x1ED3FF84: GICD_ISPENDR[2]    (0xF9000208, bit7=TTC pending)
-           * 0x1ED3FF80: GICC_IAR           (0xF900100C, 0x3FF=no IRQ)
-           * 0x1ED3FF7C: GICC_CTLR          (0xF9001000, bit0=enable) */
+           * 0x1EEFFF90: CPSR (bit7=I, 0=IRQs enabled)
+           * 0x1EEFFF88: GICD_ISENABLER[2]  (0xF9000108, bit7=IRQ71 TTC)
+           * 0x1EEFFF84: GICD_ISPENDR[2]    (0xF9000208, bit7=TTC pending)
+           * 0x1EEFFF80: GICC_IAR           (0xF900100C, 0x3FF=no IRQ)
+           * 0x1EEFFF7C: GICC_CTLR          (0xF9001000, bit0=enable) */
           uint32_t cpsr_snap;
           __asm__ volatile("mrs %0, cpsr" : "=r" (cpsr_snap));
-          *((volatile uint32_t *)0x1ED3FF90u) = cpsr_snap;
-          *((volatile uint32_t *)0x1ED3FF88u) = *((volatile uint32_t *)0xF9000108u);
-          *((volatile uint32_t *)0x1ED3FF84u) = *((volatile uint32_t *)0xF9000208u);
-          *((volatile uint32_t *)0x1ED3FF78u) = *((volatile uint32_t *)0xF9000308u); /* ISACTIVER[2] */
-          *((volatile uint32_t *)0x1ED3FF74u) = *((volatile uint32_t *)0xF9001014u); /* GICC_RPR */
+          *((volatile uint32_t *)0x1EEFFF90u) = cpsr_snap;
+          *((volatile uint32_t *)0x1EEFFF88u) = *((volatile uint32_t *)0xF9000108u);
+          *((volatile uint32_t *)0x1EEFFF84u) = *((volatile uint32_t *)0xF9000208u);
+          *((volatile uint32_t *)0x1EEFFF78u) = *((volatile uint32_t *)0xF9000308u); /* ISACTIVER[2] */
+          *((volatile uint32_t *)0x1EEFFF74u) = *((volatile uint32_t *)0xF9001014u); /* GICC_RPR */
           uint32_t iar_snap = *((volatile uint32_t *)0xF900100Cu);
-          *((volatile uint32_t *)0x1ED3FF80u) = iar_snap;
-          *((volatile uint32_t *)0x1ED3FF7Cu) = *((volatile uint32_t *)0xF9001000u);
+          *((volatile uint32_t *)0x1EEFFF80u) = iar_snap;
+          *((volatile uint32_t *)0x1EEFFF7Cu) = *((volatile uint32_t *)0xF9001000u);
           if ((iar_snap & 0x3FFu) != 0x3FFu)
             {
-              *((volatile uint32_t *)0x1ED3FF94u) = iar_snap;
-              *((volatile uint32_t *)0x1ED3FF8Cu) += 1;
+              *((volatile uint32_t *)0x1EEFFF94u) = iar_snap;
+              *((volatile uint32_t *)0x1EEFFF8Cu) += 1;
               *((volatile uint32_t *)0xF9001010u) = iar_snap;  /* GICC_EOIR */
             }
           zynqr5_rptun_ipi_check();
@@ -361,7 +361,7 @@ static int rptun_thread(int argc, FAR char *argv[])
           sched_yield();
         }
       /* DBG: 0xCC.. → semrx acquired, entering rptun_worker */
-      *((volatile uint32_t *)0x1ED3FFD8u) = 0xCCCCCCCCu;
+      *((volatile uint32_t *)0x1EEFFFD8u) = 0xCCCCCCCCu;
       __asm__ volatile("dsb sy" ::: "memory");
 #else
       nxsem_wait_uninterruptible(&priv->semrx);
@@ -544,7 +544,7 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
   {
     void zynqr5_rptun_ipi_check(void);
     void zynqr5_timer_poll(void);
-    *((volatile uint32_t *)0x1ED3FFD8u) = 0xEEEEEEEEu;  /* DBG: in notify_wait */
+    *((volatile uint32_t *)0x1EEFFFD8u) = 0xEEEEEEEEu;  /* DBG: in notify_wait */
     __asm__ volatile("dsb sy" ::: "memory");
     while (nxsem_trywait(&priv->semtx) != OK)
       {
@@ -553,7 +553,7 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
         sched_yield();
       }
   }
-  *((volatile uint32_t *)0x1ED3FFD8u) = 0xFFFFFFFFu;  /* DBG: semtx acquired */
+  *((volatile uint32_t *)0x1EEFFFD8u) = 0xFFFFFFFFu;  /* DBG: semtx acquired */
   __asm__ volatile("dsb sy" ::: "memory");
 #else
   nxsem_wait(&priv->semtx);
@@ -673,7 +673,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
   int ret;
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000010u; /* entered rptun_dev_start */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000010u; /* entered rptun_dev_start */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -684,7 +684,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
     }
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000011u; /* remoteproc_config OK */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000011u; /* remoteproc_config OK */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -722,7 +722,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
         }
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-      *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000012u; /* set_rsc_table OK */
+      *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000012u; /* set_rsc_table OK */
       __asm__ volatile("dsb sy" ::: "memory");
 #endif
     }
@@ -798,7 +798,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
   /* Remote proc create */
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000013u; /* about to create_virtio */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000013u; /* about to create_virtio */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -809,7 +809,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
     }
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000014u; /* create_virtio OK */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000014u; /* create_virtio OK */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -840,7 +840,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
     }
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000015u; /* rpmsg_init_vdev OK */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000015u; /* rpmsg_init_vdev OK */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -856,7 +856,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
     }
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000016u; /* remoteproc_start OK */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000016u; /* remoteproc_start OK */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -865,7 +865,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
   RPTUN_REGISTER_CALLBACK(priv->dev, rptun_callback, priv);
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000001u; /* past REGISTER_CALLBACK */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000001u; /* past REGISTER_CALLBACK */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -874,7 +874,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
   nxrmutex_lock(&g_rptun_lockcb);
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000002u; /* lockcb acquired */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000002u; /* lockcb acquired */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -890,7 +890,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
   nxrmutex_unlock(&g_rptun_lockcb);
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000003u; /* lockcb released */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000003u; /* lockcb released */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -901,7 +901,7 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
   nxrmutex_unlock(&g_rptun_lockpriv);
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000004u; /* lockpriv done */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000004u; /* lockpriv done */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -909,12 +909,12 @@ static int rptun_dev_start(FAR struct remoteproc *rproc)
 
 #ifdef CONFIG_RPTUN_PING
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000005u; /* about to ping_init */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000005u; /* about to ping_init */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
   rptun_ping_init(&priv->rvdev, &priv->ping);
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FFD0u) = 0xAB000006u; /* ping_init returned */
+  *((volatile uint32_t *)0x1EEFFFD0u) = 0xAB000006u; /* ping_init returned */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 #endif
@@ -1343,13 +1343,13 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
   int ret;
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FF4Cu) = 0xAA000001u; /* rptun_initialize entered */
+  *((volatile uint32_t *)0x1EEFFF4Cu) = 0xAA000001u; /* rptun_initialize entered */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
   ret = metal_init(&params);
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FF48u) = (uint32_t)ret; /* metal_init retval */
+  *((volatile uint32_t *)0x1EEFFF48u) = (uint32_t)ret; /* metal_init retval */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
   if (ret < 0)
@@ -1359,7 +1359,7 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
 
   priv = kmm_zalloc(sizeof(struct rptun_priv_s));
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FF44u) = (uint32_t)priv; /* kmm_zalloc result (0=NULL) */
+  *((volatile uint32_t *)0x1EEFFF44u) = (uint32_t)priv; /* kmm_zalloc result (0=NULL) */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
   if (priv == NULL)
@@ -1374,18 +1374,18 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
   metal_list_init(&priv->bind);
   nxrmutex_init(&priv->lock);
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FF40u) = 0xAA000003u; /* remoteproc_init done */
+  *((volatile uint32_t *)0x1EEFFF40u) = 0xAA000003u; /* remoteproc_init done */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
   snprintf(name, sizeof(name), "/dev/rptun/%s", RPTUN_GET_CPUNAME(dev));
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FF5Cu) = 0xBB000001u; /* before register_driver */
+  *((volatile uint32_t *)0x1EEFFF5Cu) = 0xBB000001u; /* before register_driver */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
   ret = register_driver(name, &g_rptun_devops, 0222, priv);
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FF58u) = (uint32_t)ret; /* register_driver retval */
+  *((volatile uint32_t *)0x1EEFFF58u) = (uint32_t)ret; /* register_driver retval */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
   if (ret < 0)
@@ -1393,7 +1393,7 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
       goto err_driver;
     }
 #ifdef CONFIG_ZYNQR5_RPTUN
-  *((volatile uint32_t *)0x1ED3FF54u) = 0xBB000002u; /* register_driver OK */
+  *((volatile uint32_t *)0x1EEFFF54u) = 0xBB000002u; /* register_driver OK */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
@@ -1425,7 +1425,7 @@ int rptun_initialize(FAR struct rptun_dev_s *dev)
                        CONFIG_RPTUN_STACKSIZE, rptun_thread, argv);
 #ifdef CONFIG_ZYNQR5_RPTUN
   /* kthread_create marker: positive = thread PID, negative = error */
-  *((volatile uint32_t *)0x1ED3FF60u) = (uint32_t)ret;
+  *((volatile uint32_t *)0x1EEFFF60u) = (uint32_t)ret;
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
   if (ret < 0)

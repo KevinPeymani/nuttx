@@ -81,13 +81,13 @@
  *   RPTUN_DBG_NOTIFY : number of IPI kick calls made by R5F
  *   RPTUN_DBG_ISR    : number of IPI interrupts received from APU
  */
-#define RPTUN_DBG_BASE    0x1ED3FFE0u
+#define RPTUN_DBG_BASE    0x1EEFFFE0u
 #define RPTUN_DBG_STEP    (RPTUN_DBG_BASE + 0x00u)
 #define RPTUN_DBG_NOTIFY  (RPTUN_DBG_BASE + 0x04u)
 #define RPTUN_DBG_ISR     (RPTUN_DBG_BASE + 0x08u)
 #define RPTUN_DBG_IDLE    (RPTUN_DBG_BASE + 0x0Cu) /* ipi_check call count */
-/* 0x1ED3FFD0: rptun_dev_start phase — reuses DEAD-marker slot (already past by START case) */
-#define RPTUN_DBG_PHASE   0x1ED3FFD0u
+/* 0x1EEFFFD0: rptun_dev_start phase — reuses DEAD-marker slot (already past by START case) */
+#define RPTUN_DBG_PHASE   0x1EEFFFD0u
 
 /* Step values written to RPTUN_DBG_STEP */
 #define DBG_STEP_INIT_ENTER    0x01u  /* zynqr5_rptun_initialize() entered */
@@ -230,7 +230,7 @@ static int zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
   priv->callback = callback;
   priv->arg      = arg;
 
-  /* Sub-breadcrumbs at RPTUN_DBG_PHASE (0x1ED3FFD0), 0xCB prefix */
+  /* Sub-breadcrumbs at RPTUN_DBG_PHASE (0x1EEFFFD0), 0xCB prefix */
 
   rptun_dbg_write(RPTUN_DBG_PHASE, 0xCB000001u); /* callback stored */
 
@@ -255,7 +255,7 @@ static int zynqr5_rptun_register_callback(FAR struct rptun_dev_s *dev,
  *   +0x08 isr_n (counter before this call)
  *   +0x0C IPI_ISR value after clear (should be 0 if clear worked)
  */
-#define DBG_IPI_SNAP    (RPTUN_DBG_BASE - 0x20u)  /* 0x1ED3FFC0 */
+#define DBG_IPI_SNAP    (RPTUN_DBG_BASE - 0x20u)  /* 0x1EEFFFC0 */
 
 static int zynqr5_ipi_isr(int irq, FAR void *context, FAR void *arg)
 {
@@ -337,12 +337,12 @@ int zynqr5_rptun_initialize(void)
   FAR struct zynqr5_rptun_dev_s *priv = &g_zynqr5_rptun_priv;
   int ret;
 
-  /* Crash-loop counter at 0x1ED3FF20: NOT cleared below, increments each call.
+  /* Crash-loop counter at 0x1EEFFF20: NOT cleared below, increments each call.
    * If this reads > 1 from A53, zynqr5_rptun_initialize ran multiple times → crash loop. */
-  *((volatile uint32_t *)0x1ED3FF20u) += 1;
+  *((volatile uint32_t *)0x1EEFFF20u) += 1;
   __asm__ volatile("dsb sy" ::: "memory");
 
-  *((volatile uint32_t *)0x1ED3FF34u) = 0xDB000001u; /* zynqr5_rptun_initialize entered */
+  *((volatile uint32_t *)0x1EEFFF34u) = 0xDB000001u; /* zynqr5_rptun_initialize entered */
   __asm__ volatile("dsb sy" ::: "memory");
 
   /* Zero the debug area so A53 can detect fresh writes. */
@@ -351,32 +351,32 @@ int zynqr5_rptun_initialize(void)
   putreg32(0, RPTUN_DBG_NOTIFY);
   putreg32(0, RPTUN_DBG_ISR);
   putreg32(0, RPTUN_DBG_IDLE);
-  *((volatile uint32_t *)0x1ED3FFDCu) = 0; /* up_idle heartbeat */
-  *((volatile uint32_t *)0x1ED3FFD4u) = 0; /* WRKR count */
-  *((volatile uint32_t *)0x1ED3FFD8u) = 0; /* STATE */
-  /* IPI snapshot area (4 words at 0x1ED3FFC0) */
+  *((volatile uint32_t *)0x1EEFFFDCu) = 0; /* up_idle heartbeat */
+  *((volatile uint32_t *)0x1EEFFFD4u) = 0; /* WRKR count */
+  *((volatile uint32_t *)0x1EEFFFD8u) = 0; /* STATE */
+  /* IPI snapshot area (4 words at 0x1EEFFFC0) */
   *((volatile uint32_t *)(DBG_IPI_SNAP + 0)) = 0;
   *((volatile uint32_t *)(DBG_IPI_SNAP + 4)) = 0;
   *((volatile uint32_t *)(DBG_IPI_SNAP + 8)) = 0;
   *((volatile uint32_t *)(DBG_IPI_SNAP + 12)) = 0;
-  putreg32(0, RPTUN_DBG_PHASE); /* zero rptun_dev_start phase (0x1ED3FFD0) */
+  putreg32(0, RPTUN_DBG_PHASE); /* zero rptun_dev_start phase (0x1EEFFFD0) */
   __asm__ volatile("dsb sy" ::: "memory");
 
   rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_INIT_ENTER);  /* 0x01 */
 
-  *((volatile uint32_t *)0x1ED3FF30u) = 0xDB000002u; /* after STEP=0x01 */
+  *((volatile uint32_t *)0x1EEFFF30u) = 0xDB000002u; /* after STEP=0x01 */
   __asm__ volatile("dsb sy" ::: "memory");
 
   priv->rptun.ops = &g_zynqr5_rptun_ops;
 
   putreg32(IPI_APU_BIT, IPI_IER);
 
-  *((volatile uint32_t *)0x1ED3FF2Cu) = 0xDB000003u; /* after IPI_IER enable */
+  *((volatile uint32_t *)0x1EEFFF2Cu) = 0xDB000003u; /* after IPI_IER enable */
   __asm__ volatile("dsb sy" ::: "memory");
 
   irq_attach(IPI_IRQ, zynqr5_ipi_isr, priv);
 
-  *((volatile uint32_t *)0x1ED3FF28u) = 0xDB000004u; /* after irq_attach */
+  *((volatile uint32_t *)0x1EEFFF28u) = 0xDB000004u; /* after irq_attach */
   __asm__ volatile("dsb sy" ::: "memory");
 
   /* NOTE: up_enable_irq(IPI_IRQ) is intentionally NOT called here.
@@ -409,7 +409,7 @@ int zynqr5_rptun_initialize(void)
    * To drain the boot IPI safely, register_callback now calls
    * IPI_ISR W1C via the spin-poll path (which tolerates the XPPU block). */
 
-  *((volatile uint32_t *)0x1ED3FF24u) = 0xDB000005u; /* after irq_attach / before rptun_init */
+  *((volatile uint32_t *)0x1EEFFF24u) = 0xDB000005u; /* after irq_attach / before rptun_init */
   __asm__ volatile("dsb sy" ::: "memory");
 
   ret = rptun_initialize(&priv->rptun);

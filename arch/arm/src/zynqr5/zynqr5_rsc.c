@@ -7,8 +7,8 @@
  * section to locate the two vrings used by the rpmsg virtio bus.
  *
  * Vring addresses must match the Linux DT reserved-memory nodes:
- *   0x1ED40000  rpu0vdev0vring0  16 KB  R5F → A53 TX
- *   0x1ED44000  rpu0vdev0vring1  16 KB  A53 → R5F RX
+ *   0x1EF00000  rpu0vdev0vring0  16 KB  R5F → A53 TX
+ *   0x1EF04000  rpu0vdev0vring1  16 KB  A53 → R5F RX
  *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -38,8 +38,8 @@
 
 /* Must match Linux DT reserved-memory nodes rpu0vdev0vring0/1 */
 
-#define VRING0_DA    0x1ED40000u  /* R5F→A53 TX; rpu0vdev0vring0@1ed40000 */
-#define VRING1_DA    0x1ED44000u  /* A53→R5F RX; rpu0vdev0vring1@1ed44000 */
+#define VRING0_DA    0x1EF00000u  /* R5F→A53 TX; rpu0vdev0vring0@1ef00000 */
+#define VRING1_DA    0x1EF04000u  /* A53→R5F RX; rpu0vdev0vring1@1ef04000 */
 #define VRING_ALIGN  0x1000u
 #define VRING_SIZE   16u
 

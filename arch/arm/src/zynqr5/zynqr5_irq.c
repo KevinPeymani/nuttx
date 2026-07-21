@@ -52,14 +52,14 @@ volatile uint32_t *g_current_regs[1];
  *
  * Description:
  *   Probe RPU GIC GICD_IIDR (read-only, safe regardless of XMPU).
- *   Breadcrumbs at 0x1ED3FFCC are readable from A53 via devmem:
+ *   Breadcrumbs at 0x1EEFFFCC are readable from A53 via devmem:
  *     0xBEEF0010 = about to read GICD_IIDR
- *     0xBEEF0011 = GICD_IIDR read completed (value stored at 0x1ED3FFD0)
+ *     0xBEEF0011 = GICD_IIDR read completed (value stored at 0x1EEFFFD0)
  *     0xBEEF0014 = about to write/read back GICD_ISENABLER[2] test bit
  *                  (isolated probe — runs before GICD_CTLR is ever touched
  *                  and before arm_gic0_initialize()/arm_gic_initialize())
  *     0xBEEF0015 = isolated probe completed (readback stored at
- *                  0x1ED3FFB4; devmem 0x1ED3FFB4 32 — expect 0x00000002
+ *                  0x1EEFFFB4; devmem 0x1EEFFFB4 32 — expect 0x00000002
  *                  if the write stuck, 0x00000000 if it was discarded)
  *     0xBEEF0012 = GIC init + up_irq_enable() completed
  *
@@ -78,10 +78,10 @@ volatile uint32_t *g_current_regs[1];
 
 void up_irqinitialize(void)
 {
-  putreg32(0xBEEF0010u, 0x1ED3FFCCu);
+  putreg32(0xBEEF0010u, 0x1EEFFFCCu);
   uint32_t iidr = getreg32(0xF9000008u);  /* GICD_IIDR — read-only probe */
-  putreg32(0xBEEF0011u, 0x1ED3FFCCu);
-  putreg32(iidr,        0x1ED3FFD0u);     /* store IIDR for inspection */
+  putreg32(0xBEEF0011u, 0x1EEFFFCCu);
+  putreg32(iidr,        0x1EEFFFD0u);     /* store IIDR for inspection */
 
   /* Clear stale active interrupts left by a previous firmware run that was
    * stopped before writing GICC_EOIR.  The GIC retains "active" state across
@@ -111,8 +111,8 @@ void up_irqinitialize(void)
   }
 
   /* Snapshot GICC_RPR after active-interrupt clear — should now be 0xFF (idle).
-   * Readable from A53: devmem 0x1ED3FFA8 32 */
-  putreg32(getreg32(0xF9001014u), 0x1ED3FFA8u);  /* GICC_RPR post-clear */
+   * Readable from A53: devmem 0x1EEFFFA8 32 */
+  putreg32(getreg32(0xF9001014u), 0x1EEFFFA8u);  /* GICC_RPR post-clear */
   __asm__ volatile("dsb sy" ::: "memory");
 
   /* Attempt to initialize the RPU GIC (PL390 at 0xF9000000).
@@ -153,12 +153,12 @@ void up_irqinitialize(void)
    * that's expected and does not invalidate the readback captured here. */
 #ifdef CONFIG_ARMV7R_HAVE_GICv2
   {
-    putreg32(0xBEEF0014u, 0x1ED3FFCCu);
+    putreg32(0xBEEF0014u, 0x1EEFFFCCu);
     putreg32(0x00000002u, 0xF9000108u);          /* GICD_ISENABLER[2] |= bit 1 (IRQ 65) */
     __asm__ volatile("dsb sy" ::: "memory");
     uint32_t isenabler2 = getreg32(0xF9000108u); /* read back in isolation */
-    putreg32(isenabler2, 0x1ED3FFB4u);           /* devmem 0x1ED3FFB4 32 */
-    putreg32(0xBEEF0015u, 0x1ED3FFCCu);
+    putreg32(isenabler2, 0x1EEFFFB4u);           /* devmem 0x1EEFFFB4 32 */
+    putreg32(0xBEEF0015u, 0x1EEFFFCCu);
   }
 
   arm_gic0_initialize();
@@ -166,16 +166,16 @@ void up_irqinitialize(void)
   up_irq_enable();
 
   /* GIC post-init snapshot — written once, never zeroed by rptun_init.
-   * Readable from A53: devmem 0x1ED3FFA0 32 (GICD_TYPER)
-   *                    devmem 0x1ED3FFA4 32 (GICD_CTLR)
-   *                    devmem 0x1ED3FFAC 32 (GICC_PMR) */
-  putreg32(getreg32(0xF9000004u), 0x1ED3FFA0u);  /* GICD_TYPER  */
-  putreg32(getreg32(0xF9000000u), 0x1ED3FFA4u);  /* GICD_CTLR   */
-  putreg32(getreg32(0xF9001004u), 0x1ED3FFACu);  /* GICC_PMR    */
+   * Readable from A53: devmem 0x1EEFFFA0 32 (GICD_TYPER)
+   *                    devmem 0x1EEFFFA4 32 (GICD_CTLR)
+   *                    devmem 0x1EEFFFAC 32 (GICC_PMR) */
+  putreg32(getreg32(0xF9000004u), 0x1EEFFFA0u);  /* GICD_TYPER  */
+  putreg32(getreg32(0xF9000000u), 0x1EEFFFA4u);  /* GICD_CTLR   */
+  putreg32(getreg32(0xF9001004u), 0x1EEFFFACu);  /* GICC_PMR    */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
-  putreg32(0xBEEF0012u, 0x1ED3FFCCu);
+  putreg32(0xBEEF0012u, 0x1EEFFFCCu);
 }
 
 /****************************************************************************
