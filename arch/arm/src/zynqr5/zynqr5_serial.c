@@ -91,6 +91,26 @@
 #define UART_INT_TOUT       (1U << 8)   /* RX timeout */
 #define UART_INT_DMSI       (1U << 9)   /* Delta modem status */
 
+/* Debug breadcrumbs — readable from A53 via devmem, free scratch words
+ * between the timer-ISR checkpoints (0x1ED3FF70) and the GIC post-init
+ * snapshot (0x1ED3FF98).  Used only to confirm the UART RX/TX ISR path is
+ * actually reached now that GIC writes are known to stick (see
+ * boards/amd/kria-kv260/boot-xmpu-fix-plan.md). */
+
+#define UART_DBG_BASE       0x1ED3FF40u
+#define UART_DBG_RXCNT      (UART_DBG_BASE + 0x00u)  /* RX/TOUT ISR hits */
+#define UART_DBG_TXCNT      (UART_DBG_BASE + 0x04u)  /* TEMPTY ISR hits */
+#define UART_DBG_ISR        (UART_DBG_BASE + 0x08u)  /* last ISR reg value */
+#define UART_DBG_RXBYTE     (UART_DBG_BASE + 0x0Cu)  /* last byte received */
+#define UART_DBG_IRQ        (UART_DBG_BASE + 0x10u)  /* IRQ number of last ISR */
+
+/* 0x1ED3FF00-0x1ED3FF1C: separate free block (0x1ED3FF20 onward collides
+ * with drivers/rptun/rptun.c's own breadcrumbs — verified by grepping both
+ * files before picking addresses, do the same before adding more). */
+#define UART_DBG_SERIALINIT 0x1ED3FF00u  /* arm_serialinit() reached */
+#define UART_DBG_SETUP_BASE 0x1ED3FF04u  /* last uartbase passed to setup() */
+#define UART_DBG_SETUP_CNT  0x1ED3FF08u  /* zynqr5_setup() call count */
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -214,6 +234,10 @@ static int zynqr5_setup(struct uart_dev_s *dev)
   uint32_t base = priv->uartbase;
   uint32_t cr;
 
+  putreg32(base, UART_DBG_SETUP_BASE);
+  *((volatile uint32_t *)UART_DBG_SETUP_CNT) += 1;
+  __asm__ volatile("dsb sy" ::: "memory");
+
   /* Reset RX and TX FIFOs, then enable RX and TX */
 
   putreg32(UART_CR_RXRST | UART_CR_TXRST, base + UART_CR_OFFSET);
@@ -265,11 +289,21 @@ static int zynqr5_interrupt(int irq, FAR void *context, FAR void *arg)
   isr = getreg32(base + UART_ISR_OFFSET);
   putreg32(isr, base + UART_ISR_OFFSET);  /* W1C clear */
 
+  putreg32(isr,             UART_DBG_ISR);
+  putreg32((uint32_t)irq,   UART_DBG_IRQ);
+  __asm__ volatile("dsb sy" ::: "memory");
+
   if (isr & (UART_INT_RTRIG | UART_INT_TOUT))
-    uart_recvchars(dev);
+    {
+      *((volatile uint32_t *)UART_DBG_RXCNT) += 1;
+      uart_recvchars(dev);
+    }
 
   if (isr & UART_INT_TEMPTY)
-    uart_xmitchars(dev);
+    {
+      *((volatile uint32_t *)UART_DBG_TXCNT) += 1;
+      uart_xmitchars(dev);
+    }
 
   return OK;
 }
@@ -283,9 +317,12 @@ static int zynqr5_receive(struct uart_dev_s *dev, unsigned int *status)
 {
   struct zynqr5_uart_s *priv = (struct zynqr5_uart_s *)dev->priv;
   uint32_t base = priv->uartbase;
+  int ch;
 
   *status = 0;
-  return (int)(getreg32(base + UART_FIFO_OFFSET) & 0xff);
+  ch = (int)(getreg32(base + UART_FIFO_OFFSET) & 0xff);
+  putreg32((uint32_t)ch, UART_DBG_RXBYTE);
+  return ch;
 }
 
 static void zynqr5_rxint(struct uart_dev_s *dev, bool enable)
@@ -376,6 +413,9 @@ static bool zynqr5_txempty(struct uart_dev_s *dev)
 
 void arm_serialinit(void)
 {
+  putreg32(0xCAFE0001u, UART_DBG_SERIALINIT);
+  __asm__ volatile("dsb sy" ::: "memory");
+
   /* Always register both UARTs under their canonical names first:
    *   UART0 → /dev/ttyS0
    *   UART1 → /dev/ttyS1
