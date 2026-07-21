@@ -315,8 +315,10 @@ static int rptun_thread(int argc, FAR char *argv[])
   while (1)
     {
 #ifdef CONFIG_ZYNQR5_RPTUN
-      /* LPD_XPPU blocks GIC writes on the R5F, so IPI cannot be routed as
-       * an IRQ until the XPPU aperture is unlocked (see ldp-xppu-gic-fix.md).
+      /* GIC writes on the R5F don't take effect (root cause unconfirmed as
+       * of 2026-07-20 — was assumed to be LPD_XPPU, now under question; see
+       * boards/amd/kria-kv260/boot-xmpu-fix-plan.md "Reassessment"), so IPI
+       * cannot be routed as an IRQ until that's resolved.
        * Spin-poll the IPI register instead of blocking indefinitely.
        * sched_yield() lets same-priority tasks (HPWORK) run between polls,
        * but we always call ipi_check ourselves so we don't depend on idle. */
@@ -536,7 +538,9 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
 
 #ifdef CONFIG_ZYNQR5_RPTUN
   /* Spin-poll semtx: we cannot block indefinitely because idle may never
-   * run to call ipi_check (LPD_XPPU blocks GIC writes; ipi_check posts semtx). */
+   * run to call ipi_check (GIC writes don't take effect on this R5F for a
+   * reason still under investigation — see boot-xmpu-fix-plan.md; ipi_check
+   * posts semtx). */
   {
     void zynqr5_rptun_ipi_check(void);
     void zynqr5_timer_poll(void);

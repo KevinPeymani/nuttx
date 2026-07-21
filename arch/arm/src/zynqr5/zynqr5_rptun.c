@@ -386,6 +386,17 @@ int zynqr5_rptun_initialize(void)
    * interrupt.  Enabling GIC IRQ 65 causes the ISR to fire, hit the
    * XPPU-blocked write, and take a data abort, crashing the firmware.
    *
+   * This part of the diagnosis (IPI_ISR itself, at 0xFF310010) still
+   * stands — IPI channels are genuine, enumerated LPD_XPPU apertures.
+   * But note: this line says "enabling GIC IRQ 65 causes the ISR to fire",
+   * i.e. the up_enable_irq(65) write to GICD_ISENABLER[2] bit 1 DID take
+   * effect somewhere along the way. That's in tension with the separate
+   * claim (see zynqr5_irq.c / boot-xmpu-fix-plan.md "Reassessment") that
+   * writes to the whole 0xF9000000-0xF9001FFF GIC range are unconditionally
+   * discarded — if that were true, IRQ 65 could never have been enabled or
+   * fired in the first place. Don't treat both claims as simultaneously
+   * settled fact; the GICD/GICC-range root cause is under re-investigation.
+   *
    * IPI delivery is handled exclusively by the spin-poll in
    * zynqr5_rptun_ipi_check() (called from rptun_thread's outer loop),
    * which uses IPI_TRIG writes that ARE permitted by the XPPU.
