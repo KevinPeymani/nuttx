@@ -113,7 +113,18 @@
 #define TTC_PS_VAL       3U
 #define TTC_CLK_DIV      (1UL << (TTC_PS_VAL + 1))     /* 16 */
 #define TTC_TICK_CLK     (CONFIG_ZYNQR5_TTC_FREQ / TTC_CLK_DIV)
-#define TTC_INTERVAL_VAL ((TTC_TICK_CLK * CONFIG_USEC_PER_TICK) / 1000000UL)
+
+/* NOTE: the intermediate product (TTC_TICK_CLK * CONFIG_USEC_PER_TICK)
+ * overflows a 32-bit unsigned long for common configs -- e.g. the
+ * default 6 250 000 * 10 000 = 62 500 000 000, versus a UINT32_MAX of
+ * ~4.29e9.  That silently wrapped to 2 370 457 856, which /1000000
+ * truncated to 2370 instead of the intended 62500: a ~26x-too-small
+ * TTC_INTERVAL, i.e. a ~26x-too-fast system tick.  Do the multiply in
+ * 64 bits to avoid this.
+ */
+
+#define TTC_INTERVAL_VAL \
+  ((uint32_t)(((uint64_t)TTC_TICK_CLK * CONFIG_USEC_PER_TICK) / 1000000ULL))
 
 /****************************************************************************
  * Private Functions
