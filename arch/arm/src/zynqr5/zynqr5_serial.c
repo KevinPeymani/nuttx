@@ -106,7 +106,15 @@
 
 /* 0x1ED3FF00-0x1ED3FF1C: separate free block (0x1ED3FF20 onward collides
  * with drivers/rptun/rptun.c's own breadcrumbs — verified by grepping both
- * files before picking addresses, do the same before adding more). */
+ * files before picking addresses, do the same before adding more).
+ *
+ * CAVEAT (2026-07-21): 0x1ED3FF00/04/08 (used below) read back stable on
+ * hardware, but 0x1ED3FF10 — nominally free by this same claim — read back
+ * rapidly-changing garbage in an unrelated timer debug session despite no
+ * code writing to it. This "free block" may not actually be safely
+ * reserved DDR; prefer picking new addresses from the RPTUN block
+ * (0x1ED3FF20-0x1ED3FFFF in drivers/rptun/rptun.c / zynqr5_rptun.c) instead,
+ * which has tested stable, until this is understood. */
 #define UART_DBG_SERIALINIT 0x1ED3FF00u  /* arm_serialinit() reached */
 #define UART_DBG_SETUP_BASE 0x1ED3FF04u  /* last uartbase passed to setup() */
 #define UART_DBG_SETUP_CNT  0x1ED3FF08u  /* zynqr5_setup() call count */

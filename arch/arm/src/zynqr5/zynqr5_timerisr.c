@@ -126,12 +126,41 @@
 #define TTC_INTERVAL_VAL \
   ((uint32_t)(((uint64_t)TTC_TICK_CLK * CONFIG_USEC_PER_TICK) / 1000000ULL))
 
+/* TEMP DEBUG (post-26x-tick-fix sanity check, 2026-07-21): uptime breadcrumb.
+ *
+ * 0x1ED3FF38 does not collide with any address found by grepping for
+ * 0x1ED3FF across every .c file under arch/arm/src/zynqr5 plus
+ * drivers/rptun/rptun.c (nearest neighbours are zynqr5_rptun.c's
+ * 0x1ED3FF34 and 0x1ED3FF40)
+ * and was picked from inside the RPTUN debug block (0x1ED3FF20-0x1ED3FFFF)
+ * rather than the UART_DBG "separate free block" at 0x1ED3FF00-0x1ED3FF1C
+ * (zynqr5_serial.c) on purpose: on-hardware testing found the latter
+ * reads back *unstable*, rapidly-changing garbage at 0x1ED3FF10 even
+ * though nothing in this codebase writes there — i.e. that "free block"
+ * claim is unverified/wrong and the underlying DDR word is apparently not
+ * safely reserved. 0x1ED3FF38, by contrast, read back a stable constant
+ * across repeated devmem reads before this breadcrumb was added, matching
+ * the behavior of the other long-lived breadcrumbs in this block.
+ *
+ * Increments once per SECS_TO_TICKS(1) ISR firings, i.e. once per real
+ * second *if* the tick fires at the configured CONFIG_USEC_PER_TICK rate.
+ * Since nxsched_process_timer() (called immediately below, once per ISR
+ * entry) is exactly what advances NuttX's own idea of elapsed ticks, this
+ * counter is a faithful proxy for "seconds since boot, as NuttX believes
+ * it" — read from the A53 side via `devmem 0x1ED3FF38 32` and compare
+ * against wall-clock time measured independently over SSH.
+ */
+#define UPTIME_DBG_SECONDS   0x1ED3FF38u
+#define TICKS_PER_SEC        (1000000UL / CONFIG_USEC_PER_TICK)
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
 
 static int zynqr5_timer_interrupt(int irq, FAR void *context, FAR void *arg)
 {
+  static uint32_t g_uptime_tick_count;
+
   /* Checkpoint A: ISR entered */
   *((volatile uint32_t *)0x1ED3FF70u) += 1;
   __asm__ volatile("dsb sy" ::: "memory");
@@ -151,6 +180,14 @@ static int zynqr5_timer_interrupt(int irq, FAR void *context, FAR void *arg)
   /* Checkpoint C: after nxsched_process_timer */
   *((volatile uint32_t *)0x1ED3FF68u) += 1;
   __asm__ volatile("dsb sy" ::: "memory");
+
+  /* TEMP DEBUG: uptime-in-seconds breadcrumb — see UPTIME_DBG_SECONDS. */
+  if (++g_uptime_tick_count >= TICKS_PER_SEC)
+    {
+      g_uptime_tick_count = 0;
+      *((volatile uint32_t *)UPTIME_DBG_SECONDS) += 1;
+      __asm__ volatile("dsb sy" ::: "memory");
+    }
 
   return OK;
 }
