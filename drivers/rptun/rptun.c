@@ -34,6 +34,7 @@
 #include <nuttx/kthread.h>
 #include <nuttx/mutex.h>
 #include <nuttx/semaphore.h>
+#include <nuttx/signal.h>
 #include <nuttx/rptun/openamp.h>
 #include <nuttx/rptun/rptun.h>
 #include <nuttx/power/pm.h>
@@ -41,6 +42,24 @@
 #include <metal/utilities.h>
 
 #include "rptun.h"
+
+#ifdef CONFIG_ZYNQR5_RPTUN
+/* rptun_thread runs at CONFIG_RPTUN_PRIORITY (224, matching the NuttX
+ * convention that HPWORK is "the highest priority thread in your system").
+ * With nothing else at that same priority, sched_yield() is a no-op (POSIX/
+ * Linux/NuttX all define it as yielding only to same-priority ready tasks),
+ * so the old spin-loop never actually relinquished the CPU and starved every
+ * lower-priority task (nsh_main at 100, and everything downstream of it)
+ * forever.  Use a real timed sleep instead so lower-priority tasks get a
+ * scheduling window between polls.  1 ms is a conservative polling period;
+ * it trades away some round-trip latency (rpmsg_ping_test.py measured
+ * ~35-45 ms avg RTT with this value, vs. sub-ms with the old always-spinning
+ * sched_yield() loop) in exchange for actually letting nsh_main and every
+ * PX4 module run at all, which the old loop never did.  Confirmed 10/10 on
+ * rpmsg_ping_test.py at this value; lower it if tighter latency is needed
+ * and re-verify the ping test still passes 10/10. */
+#  define ZYNQR5_RPTUN_POLL_USEC 1000
+#endif
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -320,8 +339,9 @@ static int rptun_thread(int argc, FAR char *argv[])
        * boards/amd/kria-kv260/boot-xmpu-fix-plan.md "Reassessment"), so IPI
        * cannot be routed as an IRQ until that's resolved.
        * Spin-poll the IPI register instead of blocking indefinitely.
-       * sched_yield() lets same-priority tasks (HPWORK) run between polls,
-       * but we always call ipi_check ourselves so we don't depend on idle. */
+       * nxsig_usleep() (see ZYNQR5_RPTUN_POLL_USEC above) actually gives up
+       * the CPU between polls, unlike sched_yield() which is a no-op here —
+       * we always call ipi_check ourselves so we don't depend on idle. */
       void zynqr5_rptun_ipi_check(void);
       void zynqr5_timer_poll(void);
       /* DBG: outer-loop heartbeat — increments each spin so A53 can confirm
@@ -358,7 +378,7 @@ static int rptun_thread(int argc, FAR char *argv[])
             }
           zynqr5_rptun_ipi_check();
           zynqr5_timer_poll();
-          sched_yield();
+          nxsig_usleep(ZYNQR5_RPTUN_POLL_USEC);
         }
       /* DBG: 0xCC.. → semrx acquired, entering rptun_worker */
       *((volatile uint32_t *)0x1EEFFFD8u) = 0xCCCCCCCCu;
@@ -550,7 +570,7 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
       {
         zynqr5_rptun_ipi_check();
         zynqr5_timer_poll();
-        sched_yield();
+        nxsig_usleep(ZYNQR5_RPTUN_POLL_USEC);
       }
   }
   *((volatile uint32_t *)0x1EEFFFD8u) = 0xFFFFFFFFu;  /* DBG: semtx acquired */
