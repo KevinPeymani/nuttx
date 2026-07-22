@@ -419,5 +419,10 @@ int zynqr5_rptun_initialize(void)
       rptun_dbg_write(RPTUN_DBG_STEP, DBG_STEP_INIT_DONE);  /* 0x02 */
     }
 
+  /* NOTE: the second rpmsg endpoint for CONFIG_RPMSG_UART is intentionally
+   * NOT registered here — see boards/amd/kria-kv260/src/init.c,
+   * board_app_initialize(), for why (ordering race with "rpmsg-ping" over
+   * RPMSG_ADDR_ANY address assignment). */
+
   return ret;
 }
