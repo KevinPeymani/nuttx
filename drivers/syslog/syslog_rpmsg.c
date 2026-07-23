@@ -71,6 +71,12 @@ struct syslog_rpmsg_s
 
   struct rpmsg_endpoint ept;
   bool                  suspend;
+
+  /* Stashed here so the deferred ept-creation work (see
+   * syslog_rpmsg_device_created()) can reach it — see that function for
+   * why the actual rpmsg_create_ept() call can't happen synchronously. */
+
+  FAR struct rpmsg_device *pending_rdev;
 };
 
 /****************************************************************************
@@ -240,24 +246,47 @@ static void syslog_rpmsg_putchar(FAR struct syslog_rpmsg_s *priv, int ch,
     }
 }
 
+static void syslog_rpmsg_create_ept_worker(FAR void *arg)
+{
+  FAR struct syslog_rpmsg_s *priv = arg;
+  FAR struct rpmsg_device *rdev = priv->pending_rdev;
+  int ret;
+
+  priv->ept.priv = priv;
+  ret = rpmsg_create_ept(&priv->ept, rdev, SYSLOG_RPMSG_EPT_NAME,
+                         0x420, RPMSG_ADDR_ANY,
+                         syslog_rpmsg_ept_cb, NULL);
+  if (ret == 0)
+    {
+      work_queue(HPWORK, &priv->work, syslog_rpmsg_work, priv, 0);
+    }
+}
+
 static void syslog_rpmsg_device_created(FAR struct rpmsg_device *rdev,
                                         FAR void *priv_)
 {
   FAR struct syslog_rpmsg_s *priv = priv_;
-  int ret;
 
   if (priv->buffer && strcmp(CONFIG_SYSLOG_RPMSG_SERVER_NAME,
                              rpmsg_get_cpuname(rdev)) == 0)
     {
-      priv->ept.priv = priv;
+      /* rpmsg_create_ept() can't run synchronously here: this callback is
+       * registered from syslog_initialize() before board_late_initialize()
+       * runs rptun_dev_start(), which broadcasts to already-registered
+       * device_created listeners *while holding g_rptun_lockcb*
+       * (drivers/rptun/rptun.c). rpmsg_create_ept() needs that same lock
+       * (indirectly, via the rpmsg core), so calling it inline here
+       * deadlocks — confirmed on hardware via rpmsg_create_ept()
+       * returning -EDEADLK (45). Deferring one HPWORK tick runs it after
+       * rptun_dev_start() has released the lock. Fixed src address, not
+       * RPMSG_ADDR_ANY, for a separate reason: an ANY-address request
+       * would win the race and grab 0x400 out from under "rpmsg-ping" —
+       * the same collision already hit and fixed once for rpmsg-uart
+       * (see board_app_initialize() in kria-kv260's init.c). */
 
-      ret = rpmsg_create_ept(&priv->ept, rdev, SYSLOG_RPMSG_EPT_NAME,
-                             RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
-                             syslog_rpmsg_ept_cb, NULL);
-      if (ret == 0)
-        {
-          work_queue(HPWORK, &priv->work, syslog_rpmsg_work, priv, 0);
-        }
+      priv->pending_rdev = rdev;
+      work_queue(HPWORK, &priv->work, syslog_rpmsg_create_ept_worker,
+                priv, 0);
     }
 }
 
