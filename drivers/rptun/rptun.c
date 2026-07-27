@@ -34,6 +34,7 @@
 #include <nuttx/kthread.h>
 #include <nuttx/mutex.h>
 #include <nuttx/semaphore.h>
+#include <nuttx/clock.h>
 #include <nuttx/signal.h>
 #include <nuttx/rptun/openamp.h>
 #include <nuttx/rptun/rptun.h>
@@ -50,15 +51,25 @@
  * Linux/NuttX all define it as yielding only to same-priority ready tasks),
  * so the old spin-loop never actually relinquished the CPU and starved every
  * lower-priority task (nsh_main at 100, and everything downstream of it)
- * forever.  Use a real timed sleep instead so lower-priority tasks get a
- * scheduling window between polls.  1 ms is a conservative polling period;
- * it trades away some round-trip latency (rpmsg_ping_test.py measured
- * ~35-45 ms avg RTT with this value, vs. sub-ms with the old always-spinning
- * sched_yield() loop) in exchange for actually letting nsh_main and every
- * PX4 module run at all, which the old loop never did.  Confirmed 10/10 on
- * rpmsg_ping_test.py at this value; lower it if tighter latency is needed
- * and re-verify the ping test still passes 10/10. */
-#  define ZYNQR5_RPTUN_POLL_USEC 1000
+ * forever.
+ *
+ * The receive path is now interrupt-driven: zynqr5_ipi_isr() runs the rptun
+ * callback, which posts these semaphores, so the waits below normally return
+ * as soon as the A53 rings the doorbell.  The timeout exists only so that a
+ * doorbell that never arrives degrades to the historical polled behaviour
+ * (zynqr5_rptun_ipi_check()) rather than hanging the link.  It should
+ * therefore be long enough not to matter when interrupts work; RPTUN_DBG_ISR
+ * vs. the poll counters in zynqr5_rptun.c say which path is carrying traffic.
+ *
+ * Note for anyone tempted to shorten this: a timeout cannot buy latency below
+ * one system tick, because clock_time2ticks() rounds *up*.  That used to be
+ * the dominant cost here -- on the default 100 Hz tick the old 1 ms poll was
+ * really 0-10 ms, an rpmsg ping crossed the gate about four times, and
+ * rpmsg_ping_test.py measured 34.5 ms avg (clustered at 39.8 ms) against
+ * 0.2 ms for the transport itself.  The board now sets
+ * CONFIG_USEC_PER_TICK=1000 (see nuttx-config/nsh/defconfig), which alone
+ * took that to 9.2 ms avg. */
+#  define ZYNQR5_RPTUN_FALLBACK_TICKS MSEC2TICK(10)
 #endif
 
 /****************************************************************************
@@ -334,51 +345,32 @@ static int rptun_thread(int argc, FAR char *argv[])
   while (1)
     {
 #ifdef CONFIG_ZYNQR5_RPTUN
-      /* GIC writes on the R5F don't take effect (root cause unconfirmed as
-       * of 2026-07-20 — was assumed to be LPD_XPPU, now under question; see
-       * boards/amd/kria-kv260/boot-xmpu-fix-plan.md "Reassessment"), so IPI
-       * cannot be routed as an IRQ until that's resolved.
-       * Spin-poll the IPI register instead of blocking indefinitely.
-       * nxsig_usleep() (see ZYNQR5_RPTUN_POLL_USEC above) actually gives up
-       * the CPU between polls, unlike sched_yield() which is a no-op here —
-       * we always call ipi_check ourselves so we don't depend on idle. */
+      /* Wait for the doorbell rather than blocking forever: inbound IPIs
+       * normally arrive as IRQ 65 and the ISR posts semrx, but the timeout
+       * keeps zynqr5_rptun_ipi_check() as a fallback so a missed interrupt
+       * costs latency instead of wedging the link.  See
+       * ZYNQR5_RPTUN_FALLBACK_TICKS above.
+       *
+       * Historical note: this loop used to snapshot GIC state on every
+       * iteration, including reading GICC_IAR and writing GICC_EOIR from
+       * thread context.  That was diagnostic scaffolding from when GIC writes
+       * were believed not to work, and it is actively unsafe now that they
+       * do: an IAR read acknowledges whatever interrupt is pending, so the
+       * loop would consume IPI (and TTC) interrupts before their real
+       * handlers ever saw them.  Do not reintroduce it. */
+
       void zynqr5_rptun_ipi_check(void);
-      void zynqr5_timer_poll(void);
-      /* DBG: outer-loop heartbeat — increments each spin so A53 can confirm
-       * firmware is alive after reload */
-      *((volatile uint32_t *)0x1EEFFFECu) += 1;
+      /* DBG: outer-loop heartbeat, so the A53 can confirm the firmware is
+       * alive after a reload */
+      *((volatile uint32_t *)0x1EEFFFF0u) += 1;
       zynqr5_rptun_ipi_check();
-      zynqr5_timer_poll();
-      /* DBG: 0x1EEFFFD8 = 0xBB.. → spinning on semrx */
+      /* DBG: 0x1EEFFFD8 = 0xBB.. → waiting on semrx */
       *((volatile uint32_t *)0x1EEFFFD8u) = 0xBBBBBBBBu;
       __asm__ volatile("dsb sy" ::: "memory");
-      while (nxsem_trywait(&priv->semrx) != OK)
+      while (nxsem_tickwait_uninterruptible(&priv->semrx,
+                                            ZYNQR5_RPTUN_FALLBACK_TICKS) != OK)
         {
-          /* Snapshot GIC distributor state from R5F while spinning.
-           * 0x1EEFFF90: CPSR (bit7=I, 0=IRQs enabled)
-           * 0x1EEFFF88: GICD_ISENABLER[2]  (0xF9000108, bit7=IRQ71 TTC)
-           * 0x1EEFFF84: GICD_ISPENDR[2]    (0xF9000208, bit7=TTC pending)
-           * 0x1EEFFF80: GICC_IAR           (0xF900100C, 0x3FF=no IRQ)
-           * 0x1EEFFF7C: GICC_CTLR          (0xF9001000, bit0=enable) */
-          uint32_t cpsr_snap;
-          __asm__ volatile("mrs %0, cpsr" : "=r" (cpsr_snap));
-          *((volatile uint32_t *)0x1EEFFF90u) = cpsr_snap;
-          *((volatile uint32_t *)0x1EEFFF88u) = *((volatile uint32_t *)0xF9000108u);
-          *((volatile uint32_t *)0x1EEFFF84u) = *((volatile uint32_t *)0xF9000208u);
-          *((volatile uint32_t *)0x1EEFFF78u) = *((volatile uint32_t *)0xF9000308u); /* ISACTIVER[2] */
-          *((volatile uint32_t *)0x1EEFFF74u) = *((volatile uint32_t *)0xF9001014u); /* GICC_RPR */
-          uint32_t iar_snap = *((volatile uint32_t *)0xF900100Cu);
-          *((volatile uint32_t *)0x1EEFFF80u) = iar_snap;
-          *((volatile uint32_t *)0x1EEFFF7Cu) = *((volatile uint32_t *)0xF9001000u);
-          if ((iar_snap & 0x3FFu) != 0x3FFu)
-            {
-              *((volatile uint32_t *)0x1EEFFF94u) = iar_snap;
-              *((volatile uint32_t *)0x1EEFFF8Cu) += 1;
-              *((volatile uint32_t *)0xF9001010u) = iar_snap;  /* GICC_EOIR */
-            }
           zynqr5_rptun_ipi_check();
-          zynqr5_timer_poll();
-          nxsig_usleep(ZYNQR5_RPTUN_POLL_USEC);
         }
       /* DBG: 0xCC.. → semrx acquired, entering rptun_worker */
       *((volatile uint32_t *)0x1EEFFFD8u) = 0xCCCCCCCCu;
@@ -557,20 +549,17 @@ static int rptun_notify_wait(FAR struct remoteproc *rproc, uint32_t id)
     }
 
 #ifdef CONFIG_ZYNQR5_RPTUN
-  /* Spin-poll semtx: we cannot block indefinitely because idle may never
-   * run to call ipi_check (GIC writes don't take effect on this R5F for a
-   * reason still under investigation — see boot-xmpu-fix-plan.md; ipi_check
-   * posts semtx). */
+  /* Same shape as the semrx wait in rptun_thread(): the IPI ISR normally
+   * posts semtx, and the timeout only exists so a missed doorbell falls back
+   * to zynqr5_rptun_ipi_check() instead of blocking forever. */
   {
     void zynqr5_rptun_ipi_check(void);
-    void zynqr5_timer_poll(void);
     *((volatile uint32_t *)0x1EEFFFD8u) = 0xEEEEEEEEu;  /* DBG: in notify_wait */
     __asm__ volatile("dsb sy" ::: "memory");
-    while (nxsem_trywait(&priv->semtx) != OK)
+    while (nxsem_tickwait_uninterruptible(&priv->semtx,
+                                          ZYNQR5_RPTUN_FALLBACK_TICKS) != OK)
       {
         zynqr5_rptun_ipi_check();
-        zynqr5_timer_poll();
-        nxsig_usleep(ZYNQR5_RPTUN_POLL_USEC);
       }
   }
   *((volatile uint32_t *)0x1EEFFFD8u) = 0xFFFFFFFFu;  /* DBG: semtx acquired */
