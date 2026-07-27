@@ -231,8 +231,16 @@ static void uart_rpmsg_dmareceive(FAR struct uart_dev_s *dev)
 
   if (len > xfer->length)
     {
+      /* The receive ring wrapped: the first xfer->length bytes go at the
+       * head, the remainder at the start of the buffer.  The source offset
+       * must advance too -- omitting it (as this did) re-copies the front of
+       * the payload over the wrapped tail, silently corrupting every inbound
+       * message that straddles the wrap.  Compare uart_rpmsg_dmasend(), which
+       * has the offset on the corresponding copy.
+       */
+
       memcpy(xfer->buffer, msg->data, xfer->length);
-      memcpy(xfer->nbuffer, msg->data, len - xfer->length);
+      memcpy(xfer->nbuffer, msg->data + xfer->length, len - xfer->length);
     }
   else
     {
