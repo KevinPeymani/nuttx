@@ -91,35 +91,34 @@
 #define UART_INT_TOUT       (1U << 8)   /* RX timeout */
 #define UART_INT_DMSI       (1U << 9)   /* Delta modem status */
 
-/* Debug breadcrumbs — readable from A53 via devmem, free scratch words
- * between the timer-ISR checkpoints (0x1EEFFF70) and the GIC post-init
- * snapshot (0x1EEFFF98).  Used only to confirm the UART RX/TX ISR path is
- * actually reached now that GIC writes are known to stick (see
- * boards/amd/kria-kv260/boot-xmpu-fix-plan.md). */
+/* Debug breadcrumbs.  This board has no console of its own to report UART
+ * problems on -- UART1 is the Linux console and UART0 has no free MIO pins --
+ * so the driver's own state has to be published to DDR for the A53 to read.
+ *
+ * Every address here must be unique across the whole image.  The scratchpad
+ * has no allocator: a word claimed by two writers silently produces readings
+ * that look like erratic hardware.  drivers/rptun/rptun.c, zynqr5_rptun.c,
+ * zynqr5_timerisr.c, zynqr5_irq.c, openamp/.../rpmsg_virtio.c and
+ * boards/amd/kria-kv260/src/init.c all write here too.  Check the map in
+ * boards/amd/kria-kv260/nuttx-config/scripts/script.ld before adding a word,
+ * and update it when you do.
+ *
+ * Note also that the scratchpad is outside every ELF segment, so it is never
+ * zero-initialised: a word this code does not write holds residual DRAM
+ * content from previous runs, not zero.  Never read meaning into a slot
+ * nothing writes.
+ */
 
 #define UART_DBG_BASE       0x1EEFFF40u
 #define UART_DBG_RXCNT      (UART_DBG_BASE + 0x00u)  /* RX/TOUT ISR hits */
 #define UART_DBG_TXCNT      (UART_DBG_BASE + 0x04u)  /* TEMPTY ISR hits */
 #define UART_DBG_ISR        (UART_DBG_BASE + 0x08u)  /* last ISR reg value */
 #define UART_DBG_RXBYTE     (UART_DBG_BASE + 0x0Cu)  /* last byte received */
-#define UART_DBG_IRQ        (UART_DBG_BASE + 0x10u)  /* IRQ number of last ISR */
+#define UART_DBG_IRQ        (UART_DBG_BASE + 0x10u)  /* IRQ of last ISR */
 
-/* 0x1EEFFF00-0x1EEFFF1C: separate free block (0x1EEFFF20 onward collides
- * with drivers/rptun/rptun.c's own breadcrumbs — verified by grepping both
- * files before picking addresses, do the same before adding more).
- *
- * CAVEAT (originally observed 2026-07-21 at the pre-carveout-grow addresses
- * 0x1ED3FF00/04/08/10 — same offsets within the debug scratchpad, shifted
- * here to 0x1EEFFF00/04/08/10 by the 2026-07-21 later rproc_0_reserved
- * grow; NOT yet re-verified at the new physical location): 0x1EEFFF00/04/08
- * (used below) read back stable on hardware, but 0x1EEFFF10 — nominally
- * free by this same claim — read back rapidly-changing garbage in an
- * unrelated timer debug session despite no code writing to it. This "free
- * block" may not actually be safely reserved DDR; prefer picking new
- * addresses from the RPTUN block (0x1EEFFF20-0x1EEFFFFF in
- * drivers/rptun/rptun.c / zynqr5_rptun.c) instead, which has tested stable,
- * until this is understood. Re-confirm both findings at the new addresses
- * before relying on them. */
+/* Registration-path markers, kept separate from the counters above so that a
+ * failure to register is distinguishable from a registered-but-silent UART. */
+
 #define UART_DBG_SERIALINIT 0x1EEFFF00u  /* arm_serialinit() reached */
 #define UART_DBG_SETUP_BASE 0x1EEFFF04u  /* last uartbase passed to setup() */
 #define UART_DBG_SETUP_CNT  0x1EEFFF08u  /* zynqr5_setup() call count */
@@ -247,6 +246,10 @@ static int zynqr5_setup(struct uart_dev_s *dev)
   uint32_t base = priv->uartbase;
   uint32_t cr;
 
+  /* Record which UART was set up and how many times.  With two UARTs
+   * registered under three paths (ttyS0, ttyS1, console), this is how a
+   * console aliased to the wrong device shows up. */
+
   putreg32(base, UART_DBG_SETUP_BASE);
   *((volatile uint32_t *)UART_DBG_SETUP_CNT) += 1;
   __asm__ volatile("dsb sy" ::: "memory");
@@ -299,8 +302,16 @@ static int zynqr5_interrupt(int irq, FAR void *context, FAR void *arg)
   uint32_t base = priv->uartbase;
   uint32_t isr;
 
+  /* Read the cause, then acknowledge it (write-1-to-clear) before dispatching.
+   * Clearing first means an event arriving during dispatch re-asserts the
+   * interrupt rather than being lost against the flags just handled. */
+
   isr = getreg32(base + UART_ISR_OFFSET);
-  putreg32(isr, base + UART_ISR_OFFSET);  /* W1C clear */
+  putreg32(isr, base + UART_ISR_OFFSET);
+
+  /* Publish the raw cause and the IRQ number: an unexpected ISR bit or a
+   * handler attached to the wrong SPI both present as "no characters" from
+   * the A53 side and are otherwise indistinguishable. */
 
   putreg32(isr,             UART_DBG_ISR);
   putreg32((uint32_t)irq,   UART_DBG_IRQ);
@@ -426,14 +437,18 @@ static bool zynqr5_txempty(struct uart_dev_s *dev)
 
 void arm_serialinit(void)
 {
+  /* Marks that VFS registration was reached at all.  Nothing can be printed
+   * from here yet, and a fault in uart_register() would otherwise leave no
+   * trace of how far boot got. */
+
   putreg32(0xCAFE0001u, UART_DBG_SERIALINIT);
   __asm__ volatile("dsb sy" ::: "memory");
 
-  /* Always register both UARTs under their canonical names first:
-   *   UART0 → /dev/ttyS0
-   *   UART1 → /dev/ttyS1
-   * Then alias the console UART to /dev/console.
-   * This ensures CONFIG_SYSLOG_DEVPATH="/dev/ttyS1" always resolves. */
+  /* Register both UARTs under their canonical names before aliasing the
+   * console.  Order matters: CONFIG_SYSLOG_DEVPATH names /dev/ttyS1
+   * explicitly, so that path must exist even when UART1 is also the console,
+   * and registering only the console device would leave syslog unable to open
+   * its output. */
 
 #ifdef CONFIG_ZYNQR5_UART0
   uart_register("/dev/ttyS0", &g_uart0dev);

@@ -114,42 +114,29 @@
 #define TTC_CLK_DIV      (1UL << (TTC_PS_VAL + 1))     /* 16 */
 #define TTC_TICK_CLK     (CONFIG_ZYNQR5_TTC_FREQ / TTC_CLK_DIV)
 
-/* NOTE: the intermediate product (TTC_TICK_CLK * CONFIG_USEC_PER_TICK)
- * overflows a 32-bit unsigned long for common configs -- e.g. the
- * default 6 250 000 * 10 000 = 62 500 000 000, versus a UINT32_MAX of
- * ~4.29e9.  That silently wrapped to 2 370 457 856, which /1000000
- * truncated to 2370 instead of the intended 62500: a ~26x-too-small
- * TTC_INTERVAL, i.e. a ~26x-too-fast system tick.  Do the multiply in
- * 64 bits to avoid this.
+/* The multiply MUST be done in 64 bits.  TTC_TICK_CLK * CONFIG_USEC_PER_TICK
+ * overflows uint32_t for ordinary configurations: at the defaults it is
+ * 6 250 000 * 10 000 = 62.5e9 against a UINT32_MAX of ~4.29e9.  A 32-bit
+ * multiply wraps to 2 370 457 856, and the divide by 1e6 then yields 2370
+ * instead of 62500 -- a TTC interval 26x too small, i.e. a system tick 26x
+ * too fast, with no compile-time diagnostic.
  */
 
 #define TTC_INTERVAL_VAL \
   ((uint32_t)(((uint64_t)TTC_TICK_CLK * CONFIG_USEC_PER_TICK) / 1000000ULL))
 
-/* TEMP DEBUG (post-26x-tick-fix sanity check, 2026-07-21): uptime breadcrumb.
+/* Seconds-since-boot counter, incremented once every TICKS_PER_SEC ISR
+ * entries.  nxsched_process_timer() -- called once per ISR entry below -- is
+ * what advances NuttX's own tick count, so this word is a faithful proxy for
+ * elapsed time *as NuttX believes it*.  Comparing it against wall-clock time
+ * measured independently on the A53 is how a misconfigured tick rate (see the
+ * overflow note above) is detected on hardware, since nothing else on this
+ * board cross-checks the tick against a known-good time source.
  *
- * 0x1EEFFF38 does not collide with any address found by grepping for
- * 0x1EEFFF across every .c file under arch/arm/src/zynqr5 plus
- * drivers/rptun/rptun.c (nearest neighbours are zynqr5_rptun.c's
- * 0x1EEFFF34 and 0x1EEFFF40)
- * and was picked from inside the RPTUN debug block (0x1EEFFF20-0x1EEFFFFF)
- * rather than the UART_DBG "separate free block" at 0x1EEFFF00-0x1EEFFF1C
- * (zynqr5_serial.c) on purpose: on-hardware testing found the latter
- * reads back *unstable*, rapidly-changing garbage at 0x1EEFFF10 even
- * though nothing in this codebase writes there — i.e. that "free block"
- * claim is unverified/wrong and the underlying DDR word is apparently not
- * safely reserved. 0x1EEFFF38, by contrast, read back a stable constant
- * across repeated devmem reads before this breadcrumb was added, matching
- * the behavior of the other long-lived breadcrumbs in this block.
- *
- * Increments once per SECS_TO_TICKS(1) ISR firings, i.e. once per real
- * second *if* the tick fires at the configured CONFIG_USEC_PER_TICK rate.
- * Since nxsched_process_timer() (called immediately below, once per ISR
- * entry) is exactly what advances NuttX's own idea of elapsed ticks, this
- * counter is a faithful proxy for "seconds since boot, as NuttX believes
- * it" — read from the A53 side via `devmem 0x1EEFFF38 32` and compare
- * against wall-clock time measured independently over SSH.
+ * Scratchpad address map:
+ * boards/amd/kria-kv260/nuttx-config/scripts/script.ld.
  */
+
 #define UPTIME_DBG_SECONDS   0x1EEFFF38u
 #define TICKS_PER_SEC        (1000000UL / CONFIG_USEC_PER_TICK)
 
@@ -161,27 +148,30 @@ static int zynqr5_timer_interrupt(int irq, FAR void *context, FAR void *arg)
 {
   static uint32_t g_uptime_tick_count;
 
-  /* Checkpoint A: ISR entered */
-  *((volatile uint32_t *)0x1EEFFF70u) += 1;
+  /* Counters A/B/C bracket nxsched_process_timer().  Comparing them from the
+   * A53 distinguishes the three ways the tick can fail: A not advancing means
+   * the TTC interrupt never reaches the core, A advancing while B stalls means
+   * the ISR faults before the scheduler call, and B advancing while C stalls
+   * means nxsched_process_timer() itself hangs or faults. */
+
+  *((volatile uint32_t *)0x1EEFFF70u) += 1;             /* A: ISR entered */
   __asm__ volatile("dsb sy" ::: "memory");
 
-  /* Reading TTC_INT_STATUS clears the interval flag. */
+  /* Reading TTC_INT_STATUS clears the interval flag (read-to-clear); it must
+   * happen before returning or the interrupt re-asserts immediately. */
+
   (void)getreg32(TTC_INT_STATUS);
 
-  /* Alive counter at end of DDR carveout — readable from A53 via devmem. */
-  *((volatile uint32_t *)0x1EEFFFDCu) += 1;
+  *((volatile uint32_t *)0x1EEFFFDCu) += 1;             /* liveness counter */
 
-  /* Checkpoint B: before nxsched_process_timer */
-  *((volatile uint32_t *)0x1EEFFF6Cu) += 1;
+  *((volatile uint32_t *)0x1EEFFF6Cu) += 1;             /* B: pre-scheduler */
   __asm__ volatile("dsb sy" ::: "memory");
 
   nxsched_process_timer();
 
-  /* Checkpoint C: after nxsched_process_timer */
-  *((volatile uint32_t *)0x1EEFFF68u) += 1;
+  *((volatile uint32_t *)0x1EEFFF68u) += 1;             /* C: post-scheduler */
   __asm__ volatile("dsb sy" ::: "memory");
 
-  /* TEMP DEBUG: uptime-in-seconds breadcrumb — see UPTIME_DBG_SECONDS. */
   if (++g_uptime_tick_count >= TICKS_PER_SEC)
     {
       g_uptime_tick_count = 0;
@@ -233,36 +223,58 @@ void up_timer_initialize(void)
   irq_attach(ZYNQR5_IRQ_TTC1_0, zynqr5_timer_interrupt, NULL);
   up_enable_irq(ZYNQR5_IRQ_TTC1_0);
 
-  /* Post-enable snapshot: GICD_ISENABLER[2] and GICD_ITARGETSR[17].
-   * Readable from A53: devmem 0x1EEFFF98 32 (ISENABLER[2], bit 7 = TTC)
-   *                    devmem 0x1EEFFF9C 32 (ITARGETSR[17], byte 3 = IRQ 71) */
+  /* Mirror the two distributor registers that decide whether IRQ 71 can
+   * actually reach this core, so a silent tick can be diagnosed from the A53
+   * without a debugger: ISENABLER[2] bit 7 is IRQ 71 (71 / 32 = 2,
+   * 71 % 32 = 7) and must read 1, and ITARGETSR[17] byte 3 is IRQ 71's CPU
+   * target mask (71 / 4 = 17, 71 % 4 = 3) and must be non-zero.  Both reading
+   * back as written also confirms the enable path is not being discarded the
+   * way some other GIC registers are (see zynqr5_irq.c). */
+
   putreg32(getreg32(0xF9000108u), 0x1EEFFF98u);  /* GICD_ISENABLER[2] */
   putreg32(getreg32(0xF9000844u), 0x1EEFFF9Cu);  /* GICD_ITARGETSR[17] */
   __asm__ volatile("dsb sy" ::: "memory");
 }
 
 /****************************************************************************
- * Name: up_idle
+ * Name: zynqr5_timer_poll
  *
  * Description:
- *   Wait for interrupt.  Timer and IPI are now GIC-driven; idle can sleep.
- *   This replaces the common arm_idle.c (filtered out in Make.defs).
+ *   No-op retained for link compatibility.  Before the TTC ran off a real
+ *   GIC interrupt, the rptun spin-poll drove the system tick by calling this
+ *   from its loop.  Callers may still reference it; the tick is now advanced
+ *   only by zynqr5_timer_interrupt().
  *
  ****************************************************************************/
-
-/* Polled timer tick — called from rptun spin-poll when GIC is disabled.
- * TTC is now interrupt-driven; this is a no-op kept for link compatibility. */
 
 void zynqr5_timer_poll(void)
 {
 }
 
+/****************************************************************************
+ * Name: up_idle
+ *
+ * Description:
+ *   Idle loop, replacing the generic arm_idle.c (filtered out in Make.defs).
+ *
+ *   WFI is safe here because the TTC tick does arrive as a GIC interrupt, so
+ *   the core is always woken.  The IPI is the exception: A53 kicks are not
+ *   reliably delivered as SPI 33 (see zynqr5_irq.c), so rptun would deadlock
+ *   waiting on a doorbell that never fires.  Polling the IPI from the idle
+ *   loop closes that gap without costing anything while the system is busy.
+ *
+ *   The poll runs on every 32nd wake rather than every wake because
+ *   zynqr5_rptun_ipi_check() writes IPI_TRIG, which raises an interrupt on
+ *   the A53 side; doing that on every idle entry would swamp Linux with
+ *   spurious IPIs.  Since up_idle() is entered on any wake and not only on
+ *   timer ticks, the resulting poll interval is a lower bound of 32 ticks,
+ *   not a fixed period.
+ *
+ ****************************************************************************/
+
 void up_idle(void)
 {
   __asm__ volatile("wfi" ::: "memory");
-
-  /* Fallback IPI check: fire every ~10 ms (every 20th TTC wake at ~2 kHz).
-   * Catches A53 kicks that the GIC failed to deliver as SPI 33. */
 
   static uint32_t s_ipi_tick;
   s_ipi_tick++;

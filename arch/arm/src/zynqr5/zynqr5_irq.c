@@ -51,46 +51,56 @@ volatile uint32_t *g_current_regs[1];
  * Name: up_irqinitialize
  *
  * Description:
- *   Probe RPU GIC GICD_IIDR (read-only, safe regardless of XMPU).
- *   Breadcrumbs at 0x1EEFFFCC are readable from A53 via devmem:
- *     0xBEEF0010 = about to read GICD_IIDR
- *     0xBEEF0011 = GICD_IIDR read completed (value stored at 0x1EEFFFD0)
- *     0xBEEF0014 = about to write/read back GICD_ISENABLER[2] test bit
- *                  (isolated probe — runs before GICD_CTLR is ever touched
- *                  and before arm_gic0_initialize()/arm_gic_initialize())
- *     0xBEEF0015 = isolated probe completed (readback stored at
- *                  0x1EEFFFB4; devmem 0x1EEFFFB4 32 — expect 0x00000002
- *                  if the write stuck, 0x00000000 if it was discarded)
- *     0xBEEF0012 = GIC init + up_irq_enable() completed
+ *   Bring up the RPU GIC (ARM PL390: GICD at 0xF9000000, GICC at
+ *   0xF9001000) and unmask interrupts at the CPU.
  *
- *   Part 0 of boards/amd/kria-kv260/boot-xmpu-fix-plan.md: this isolated
- *   probe exists to tell apart two failure theories.  GICD_ISENABLER[2]
- *   (0xF9000108) and GICD_CTLR (0xF9000000) are different registers, and
- *   ICDICER (cleared by arm_gic0_initialize() right after this probe) may
- *   live in a different security/group banking than CTLR's global-enable
- *   bit.  If ISENABLER's bit sticks here but GICD_CTLR still reads 0 after
- *   arm_gic_initialize() below, that points at secure/non-secure register
- *   banking rather than a protection unit blocking the whole 0xF9000000
- *   aperture uniformly.
- *   rptun spin-poll fallback in up_idle() remains active as a safety net.
+ *   Two things happen here that an ordinary GIC port does not need:
+ *
+ *   1. Stale *active* interrupt state is cleared before initialisation.
+ *      The RPU GIC is not reset when Linux remoteproc stops and restarts
+ *      this core, so an image killed between GICC_IAR and GICC_EOIR leaves
+ *      its interrupt permanently active.  GICC_RPR then stays pinned at
+ *      that interrupt's priority and the GIC refuses to signal anything at
+ *      an equal or lower priority: the core boots and runs normally but
+ *      never receives another interrupt.  The loop below EOIs every bit set
+ *      in GICD_ISACTIVER (which drops RPR) and then clears the
+ *      distributor's copy of the active state via GICD_ICACTIVER.
+ *
+ *   2. GIC register state is mirrored into the debug scratchpad.  Writes to
+ *      parts of this aperture have been observed not to stick on this part
+ *      (see the note at the isolated read-back probe below), and the RPU has
+ *      no debugger attached in normal operation.  Mirroring the registers to
+ *      DDR is the only way for the A53 to tell "the write was discarded"
+ *      apart from "the write worked but the interrupt never arrived".
+ *      Scratchpad address map:
+ *      boards/amd/kria-kv260/nuttx-config/scripts/script.ld.
+ *
+ *   Progress markers are written to 0x1EEFFFCC so a hang inside this
+ *   function can be localised from the A53:
+ *     0xBEEF0010  about to read GICD_IIDR
+ *     0xBEEF0011  GICD_IIDR read returned (value at 0x1EEFFFD0)
+ *     0xBEEF0014  about to run the isolated GICD_ISENABLER read-back
+ *     0xBEEF0015  read-back complete (result at 0x1EEFFFB4)
+ *     0xBEEF0012  GIC init and up_irq_enable() complete
  *
  ****************************************************************************/
 
 void up_irqinitialize(void)
 {
-  putreg32(0xBEEF0010u, 0x1EEFFFCCu);
-  uint32_t iidr = getreg32(0xF9000008u);  /* GICD_IIDR — read-only probe */
-  putreg32(0xBEEF0011u, 0x1EEFFFCCu);
-  putreg32(iidr,        0x1EEFFFD0u);     /* store IIDR for inspection */
+  /* GICD_IIDR is read-only, so this read is safe whatever state a previous
+   * firmware image left the GIC in, and it establishes that the 0xF9000000
+   * aperture is reachable at all before any write is attempted. */
 
-  /* Clear stale active interrupts left by a previous firmware run that was
-   * stopped before writing GICC_EOIR.  The GIC retains "active" state across
-   * remoteproc stop/start, leaving GICC_RPR stuck at the stale priority and
-   * blocking all new interrupts at the same or lower (numerically higher)
-   * priority level.
-   *
-   * Fix: for each set bit in GICD_ISACTIVER write GICC_EOIR (drops RPR),
-   * then write GICD_ICACTIVER to clear the distributor active state. */
+  putreg32(0xBEEF0010u, 0x1EEFFFCCu);
+  uint32_t iidr = getreg32(0xF9000008u);  /* GICD_IIDR */
+  putreg32(0xBEEF0011u, 0x1EEFFFCCu);
+  putreg32(iidr,        0x1EEFFFD0u);     /* mirror for A53 inspection */
+
+  /* Clear interrupts left active by a previous firmware image (see item 1
+   * of the function comment).  ISACTIVER[0..4] covers IRQs 0-159, which
+   * spans the whole 148-interrupt RPU GIC.  EOI must be written per set bit
+   * because each EOI pops one entry off the CPU interface's active priority
+   * stack, whereas the ICACTIVER write clears the whole word at once. */
   {
     uint32_t i;
     for (i = 0u; i < 5u; i++)
@@ -110,68 +120,65 @@ void up_irqinitialize(void)
       }
   }
 
-  /* Snapshot GICC_RPR after active-interrupt clear — should now be 0xFF (idle).
-   * Readable from A53: devmem 0x1EEFFFA8 32 */
-  putreg32(getreg32(0xF9001014u), 0x1EEFFFA8u);  /* GICC_RPR post-clear */
+  /* Mirror GICC_RPR so the clear above can be confirmed: a healthy idle CPU
+   * interface reads 0xFF (no priority active).  Any other value means an
+   * interrupt is still active and interrupt delivery will remain wedged. */
+
+  putreg32(getreg32(0xF9001014u), 0x1EEFFFA8u);  /* GICC_RPR */
   __asm__ volatile("dsb sy" ::: "memory");
 
-  /* Attempt to initialize the RPU GIC (PL390 at 0xF9000000).
+  /* Write one bit to GICD_ISENABLER[2] and read it straight back.
    *
-   * NOTE: As of 2026-07-09, GICD_CTLR, GICD_ISENABLER, and GICC_CTLR all
-   * read back as 0 after arm_gic*_initialize() — writes to at least some
-   * registers in this range don't stick.  arm_gic0/gic_initialize() and
-   * up_enable_irq() therefore run without faulting but appear to have no
-   * effect on those specific registers.
+   * This exists because GICD_CTLR, GICD_ISENABLER and GICC_CTLR have all
+   * been observed reading back as 0 after arm_gic*_initialize() on this
+   * part: the writes do not fault, they are simply discarded.  The root
+   * cause is not established.  It is *not* the LPD_XPPU or FPD_XMPU --
+   * this board's Vivado design programs neither (psu_lpd_xppu_data() and
+   * psu_fpd_xmpu_data() in psu_init_gpl.c are empty stubs) and the XPPU
+   * aperture list has no entry covering 0xF9000000.  The leading candidate
+   * is GIC secure/non-secure register banking, where a Secure-gated field
+   * written from a Non-secure context is architecturally RAZ/WI with no
+   * protection unit involved.
    *
-   * root cause UNCONFIRMED as of 2026-07-20 — do not assume LPD_XPPU/XMPU_FPD.
-   * This board's own Vivado hardware design configures no XPPU or XMPU
-   * regions at all (psu_lpd_xppu_data()/psu_fpd_xmpu_data() in
-   * psu_init_gpl.c are empty stubs), and the LPD_XPPU aperture list doesn't
-   * even include an entry near 0xF9000000. A more likely explanation being
-   * investigated: GIC secure/non-secure register-group banking (writes to a
-   * Secure-gated field from a Non-secure context are architecturally RAZ/WI,
-   * with no protection unit involved) — this would also explain why IRQ 65
-   * apparently *did* get enabled and fire elsewhere (see zynqr5_rptun.c),
-   * which is hard to reconcile with "every write to this range is ignored".
-   * See boards/amd/kria-kv260/boot-xmpu-fix-plan.md ("Reassessment" section)
-   * for the current investigation status before changing BOOT.BIN or Vivado.
+   * The read-back is kept separate from GICD_CTLR and from the
+   * arm_gic*_initialize() calls below because those touch overlapping
+   * registers; interleaving them makes it impossible to attribute a failed
+   * read-back to one specific register.  Bit 1 of word [2] is IRQ 65
+   * (65 / 32 = 2, 65 % 32 = 1), the IPI SPI, chosen because rptun's
+   * behaviour suggests that particular enable does take effect.
    *
-   * Until resolved: rptun uses the spin-poll path in up_idle() (fallback in
-   * zynqr5_rptun_ipi_check).  up_irq_enable() is still called here so
-   * that the ARM CPSR.I bit is cleared — needed for WFI to be interruptible
-   * by whatever signals the processor does receive. */
+   * arm_gic0_initialize() clears this bit again via its GIC_ICDICER(64)
+   * write immediately afterwards.  That is expected -- the value captured
+   * at 0x1EEFFFB4 is sampled before that happens and stays valid.
+   */
 
-  /* Part 0 isolated probe (boot-xmpu-fix-plan.md "Part 0 - Rule out GIC
-   * secure/non-secure banking"): write a single bit to GICD_ISENABLER[2]
-   * and read it straight back, deliberately kept separate from GICD_CTLR
-   * and from arm_gic0_initialize()/arm_gic_initialize() below (both of
-   * which touch overlapping registers and would make it impossible to
-   * tell which write caused which effect).  Bit 1 of register [2] is IRQ
-   * 65 (65 / 32 = 2, 65 % 32 = 1) - the IPI SPI relevant to the
-   * reassessment's contradiction.  This bit gets legitimately cleared by
-   * arm_gic0_initialize()'s GIC_ICDICER(64) call right after this probe;
-   * that's expected and does not invalidate the readback captured here. */
 #ifdef CONFIG_ARMV7R_HAVE_GICv2
   {
     putreg32(0xBEEF0014u, 0x1EEFFFCCu);
-    putreg32(0x00000002u, 0xF9000108u);          /* GICD_ISENABLER[2] |= bit 1 (IRQ 65) */
+    putreg32(0x00000002u, 0xF9000108u);          /* GICD_ISENABLER[2] bit 1 */
     __asm__ volatile("dsb sy" ::: "memory");
-    uint32_t isenabler2 = getreg32(0xF9000108u); /* read back in isolation */
-    putreg32(isenabler2, 0x1EEFFFB4u);           /* devmem 0x1EEFFFB4 32 */
+    uint32_t isenabler2 = getreg32(0xF9000108u);
+    putreg32(isenabler2, 0x1EEFFFB4u);           /* 2 = stuck, 0 = discarded */
     putreg32(0xBEEF0015u, 0x1EEFFFCCu);
   }
+
+  /* up_irq_enable() is called even though the GIC may be ignoring the enable
+   * writes: it also clears CPSR.I, without which WFI in up_idle() could never
+   * be woken by any interrupt the core does manage to receive.  While the
+   * discarded-write behaviour stands, rptun does not depend on GIC delivery
+   * at all -- zynqr5_rptun_ipi_check() polls the IPI from up_idle() instead. */
 
   arm_gic0_initialize();
   arm_gic_initialize();
   up_irq_enable();
 
-  /* GIC post-init snapshot — written once, never zeroed by rptun_init.
-   * Readable from A53: devmem 0x1EEFFFA0 32 (GICD_TYPER)
-   *                    devmem 0x1EEFFFA4 32 (GICD_CTLR)
-   *                    devmem 0x1EEFFFAC 32 (GICC_PMR) */
-  putreg32(getreg32(0xF9000004u), 0x1EEFFFA0u);  /* GICD_TYPER  */
-  putreg32(getreg32(0xF9000000u), 0x1EEFFFA4u);  /* GICD_CTLR   */
-  putreg32(getreg32(0xF9001004u), 0x1EEFFFACu);  /* GICC_PMR    */
+  /* Post-init mirror of the registers whose writes are suspect.  GICD_CTLR
+   * reading 0 here is the primary symptom described above; GICD_TYPER (which
+   * is read-only, so always trustworthy) and GICC_PMR bound the diagnosis. */
+
+  putreg32(getreg32(0xF9000004u), 0x1EEFFFA0u);  /* GICD_TYPER */
+  putreg32(getreg32(0xF9000000u), 0x1EEFFFA4u);  /* GICD_CTLR  */
+  putreg32(getreg32(0xF9001004u), 0x1EEFFFACu);  /* GICC_PMR   */
   __asm__ volatile("dsb sy" ::: "memory");
 #endif
 

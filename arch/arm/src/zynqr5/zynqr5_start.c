@@ -48,36 +48,37 @@
  *   arm_head.S already called arm_data_initialize(), so .bss/.data are
  *   valid here.
  *
+ *   Nothing in this function can report a failure: the console is not up
+ *   until zynqr5_lowsetup() returns, and even then syslog is not running.
+ *   The 0xA001xxxx markers written to 0x1EEFFFB0 are therefore the only
+ *   evidence of how far early boot progressed, and are read from the A53 with
+ *   devmem after a silent hang.  Scratchpad address map:
+ *   boards/amd/kria-kv260/nuttx-config/scripts/script.ld.
+ *
  ****************************************************************************/
 
 void arm_boot(void)
 {
-  /* Breadcrumb: arm_boot() entered (after arm_head.S + arm_data_initialize) */
-  *((volatile uint32_t *)0x1EEFFFB0u) = 0xA0010001u;
+  *((volatile uint32_t *)0x1EEFFFB0u) = 0xA0010001u;  /* reached arm_boot */
 
-  /* Enable the FPU so floating-point operations can be used before nx_start
-   * configures the FPU context for each task.
-   */
+  /* Enable the FPU before anything else runs.  PX4 uses floating point
+   * throughout, including in code that runs before nx_start() sets up
+   * per-task FPU contexts; without this those accesses trap. */
 
   arm_fpuconfig();
 
-  /* Breadcrumb: arm_fpuconfig() survived */
-  *((volatile uint32_t *)0x1EEFFFB0u) = 0xA0010002u;
+  *((volatile uint32_t *)0x1EEFFFB0u) = 0xA0010002u;  /* FPU enabled */
 
-  /* Configure the early debug UART console (polls TX FIFO, no interrupt).
-   * The FSBL/U-Boot has already set the baud-rate divisors; we just ensure
-   * TX is enabled.
-   */
+  /* Bring up polled console output.  The FSBL and U-Boot have already
+   * programmed the baud-rate divisors, so only the transmitter needs
+   * enabling -- reprogramming the divisors here would risk corrupting a UART
+   * that Linux is also using. */
 
   zynqr5_lowsetup();
 
-  /* Board-specific early initialisation (stub in Phase 1). */
-
   zynqr5_board_initialize();
 
-  *((volatile uint32_t *)0x1EEFFFA8u) = 0xBB000001u;  /* arm_boot: before nx_start */
-
-  /* Hand control to the NuttX kernel. */
+  *((volatile uint32_t *)0x1EEFFFA8u) = 0xBB000001u;  /* entering nx_start */
 
   nx_start();
 }
