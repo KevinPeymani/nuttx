@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <nuttx/fs/fs.h>
 #include <nuttx/rptun/rptun.h>
 #include <nuttx/syslog/syslog.h>
 #include <openamp/remoteproc.h>
@@ -64,8 +65,8 @@
  * rproc@1ed00000 covers [0x1ED00000, 0x1EF00000) so this qualifies.
  */
 
-#define TRACE_DA     0x1EEFDE00u
-#define TRACE_LEN    0x2000u      /* 8 KB */
+#define TRACE_DA     0x1EEF7E00u
+#define TRACE_LEN    0x8000u      /* 32 KB -- must hold a whole PX4 boot log */
 
 /****************************************************************************
  * Public Data
@@ -218,6 +219,55 @@ static struct syslog_channel_s g_trace_channel =
  *   this one's.
  *
  ****************************************************************************/
+
+/* Character-device face of the same ring, so stdout/stderr can be pointed at
+ * it.  This is the reason the ring exists in its present form: PX4's
+ * PX4_ERR/PX4_INFO are printf to fd 1/2, they do not go through syslog, and
+ * the rpmsg tty that used to carry them wedges after a few KB and replays its
+ * transmit ring -- which cost several wrong conclusions before it was
+ * understood.  Writing here is the same lock-free memcpy the syslog channel
+ * uses, so it cannot wedge, cannot block a task, and needs no peer draining
+ * it.
+ */
+
+static ssize_t zynqr5_trace_dev_write(FAR struct file *filep,
+                                      FAR const char *buffer, size_t buflen)
+{
+  zynqr5_trace_putbuf(buffer, buflen);
+  return (ssize_t)buflen;
+}
+
+static ssize_t zynqr5_trace_dev_read(FAR struct file *filep,
+                                     FAR char *buffer, size_t buflen)
+{
+  return 0;   /* EOF: this is a sink, and never a source for a shell */
+}
+
+static const struct file_operations g_trace_devops =
+{
+  NULL,                      /* open  */
+  NULL,                      /* close */
+  zynqr5_trace_dev_read,     /* read  */
+  zynqr5_trace_dev_write,    /* write */
+  NULL,                      /* seek  */
+  NULL,                      /* ioctl */
+  NULL,                      /* poll  */
+};
+
+/****************************************************************************
+ * Name: zynqr5_trace_register
+ *
+ * Description:
+ *   Register /dev/trace.  Separate from zynqr5_trace_init() because that runs
+ *   before nx_start() and therefore before the VFS exists; this must be called
+ *   later, from board_app_initialize().
+ *
+ ****************************************************************************/
+
+int zynqr5_trace_register(void)
+{
+  return register_driver("/dev/trace", &g_trace_devops, 0666, NULL);
+}
 
 void zynqr5_trace_init(void)
 {
