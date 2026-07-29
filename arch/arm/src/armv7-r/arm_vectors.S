@@ -181,13 +181,6 @@ arm_vectorirq:
 	bl		arm_decodeirq			/* Call the handler */
 	ldr		sp, [r4]			/* Restore the user stack pointer */
 
-	/* Debug: capture context ptr returned from arm_decodeirq at 0x1ED3FF10.
-	 * Non-0xFFFF value here confirms the restore path was reached.
-	 * r14 (SYS LR) is safe to use as scratch — will be overwritten by
-	 * the ldmia/ldmia^ sequence in the return path below. */
-	ldr		r14, .Ldbgctx			/* r14 = &dbg slot 0x1ED3FF10 */
-	str		r0, [r14]			/* [0x1ED3FF10] = context ptr */
-
 #else
 	/* Call arm_decodeirq() on the user stack */
 
@@ -243,8 +236,6 @@ arm_vectorirq:
 #if CONFIG_ARCH_INTERRUPTSTACK > 7
 .Lirqstacktop:
 	.word	g_intstacktop
-.Ldbgctx:
-	.word	0x1ED3FF10
 #endif
 	.size	arm_vectorirq, . - arm_vectorirq
 
