@@ -49,6 +49,57 @@ config ZYNQR5_TTC_FREQ
 	default 100000000
 	depends on ZYNQR5_TTC1
 
+config ZYNQR5_TTC_HRT
+	bool "Dedicate a second TTC to a high-resolution timer"
+	default n
+	---help---
+		Claims a TTC counter separate from the system tick so the PX4 layer
+		can provide a microsecond-resolution hrt_absolute_time() instead of
+		reading the tick-backed CLOCK_MONOTONIC.
+
+		This only reserves the hardware and publishes its addresses; the
+		driver itself lives in the PX4 platform layer
+		(platforms/nuttx/src/px4/amd/zynqr5/hrt).
+
+		NOTE on ownership: TTC0 is used by Linux on the Kria KV260 (bound to
+		ttc-pwm, exposing pwmchip0), and TTC1 is the NuttX system tick, so
+		the default here is TTC2.  All four TTCs are status="okay" in the
+		Linux device tree, so check for a bound driver rather than trusting
+		the DT when choosing.
+
+if ZYNQR5_TTC_HRT
+
+config ZYNQR5_TTC_HRT_BASE
+	hex "HRT TTC register base address"
+	default 0xff130000
+	---help---
+		TTC0 0xff110000, TTC1 0xff120000, TTC2 0xff130000, TTC3 0xff140000.
+		Must differ from the TTC used for the system tick.
+
+config ZYNQR5_TTC_HRT_COUNTER
+	int "HRT TTC counter index within that TTC (0-2)"
+	default 0
+	range 0 2
+
+config ZYNQR5_TTC_HRT_IRQ
+	int "GIC IRQ number for that TTC counter"
+	default 74
+	---help---
+		TTC2 counter 0 is SPI 42, i.e. IRQ 74.  See
+		arch/arm/include/zynqr5/irq.h for the full map.
+
+config ZYNQR5_TTC_HRT_PRESCALE_LOG2
+	int "HRT prescaler exponent: divide input clock by 2^(N+1)"
+	default 5
+	range 0 15
+	---help---
+		The TTC prescaler only divides by powers of two, so an exact 1 MHz
+		count cannot be produced from a 100 MHz input.  N=5 divides by 64,
+		giving 1.5625 MHz (0.64 us per count), and microseconds convert
+		exactly as count * 16 / 25 with no accumulating error.
+
+endif
+
 endmenu
 
 config ZYNQR5_RPTUN

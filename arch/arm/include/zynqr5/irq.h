@@ -81,6 +81,29 @@
 #define ZYNQR5_IRQ_TTC1_1       (ZYNQR5_IRQ_SPI_OFFSET + 40)   /* IRQ 72 */
 #define ZYNQR5_IRQ_TTC1_2       (ZYNQR5_IRQ_SPI_OFFSET + 41)   /* IRQ 73 */
 
+/* TTC2 */
+#define ZYNQR5_IRQ_TTC2_0       (ZYNQR5_IRQ_SPI_OFFSET + 42)   /* IRQ 74 */
+#define ZYNQR5_IRQ_TTC2_1       (ZYNQR5_IRQ_SPI_OFFSET + 43)   /* IRQ 75 */
+#define ZYNQR5_IRQ_TTC2_2       (ZYNQR5_IRQ_SPI_OFFSET + 44)   /* IRQ 76 */
+
+/* TTC3 */
+#define ZYNQR5_IRQ_TTC3_0       (ZYNQR5_IRQ_SPI_OFFSET + 45)   /* IRQ 77 */
+#define ZYNQR5_IRQ_TTC3_1       (ZYNQR5_IRQ_SPI_OFFSET + 46)   /* IRQ 78 */
+#define ZYNQR5_IRQ_TTC3_2       (ZYNQR5_IRQ_SPI_OFFSET + 47)   /* IRQ 79 */
+
+/* Which TTC belongs to whom on this board, verified against the running
+ * system rather than assumed -- getting this wrong means two masters driving
+ * one timer:
+ *   TTC0 (0xFF110000) is LINUX's.  It is bound to the ttc-pwm driver and
+ *        exposes /sys/class/pwm/pwmchip0.  Do not touch it from the R5.
+ *   TTC1 (0xFF120000) is the NuttX system tick (counter 0, IRQ 71).
+ *   TTC2 (0xFF130000) is the PX4 HRT (see platforms/nuttx/src/px4/amd/zynqr5).
+ *   TTC3 (0xFF140000) is unclaimed.
+ * All four are status="okay" in the Linux device tree, so "enabled in the DT"
+ * is not evidence of ownership; check for a bound driver under
+ * /sys/bus/platform/devices/ff1?0000.timer/driver instead.
+ */
+
 /* RPU0 IPI channel (register block at 0xFF310000), per
  * XPAR_XIPIPSU_0_INTR = 0x41 = 65.  The A53 refers to the same doorbell as
  * SPI 29 on its own GIC instance; see zynqr5_rptun.c. */
