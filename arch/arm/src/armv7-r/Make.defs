@@ -45,7 +45,11 @@ CMN_ASRCS += cp15_flush_dcache.S cp15_invalidate_dcache_all.S
 CMN_ASRCS += cp15_invalidate_dcache.S
 
 
-ifeq ($(CONFIG_BUILD_PROTECTED),y)
+# arm_mpu.c was previously gated on BUILD_PROTECTED alone, which meant a flat
+# build could set CONFIG_ARM_MPU=y, have Kconfig honour it, and still link
+# without mpu_allocregion()/mpu_log2regionceil()/mpu_subregion().  ARM_MPU is
+# the option that means "MPU support wanted", so accept either.
+ifneq ($(filter y,$(CONFIG_BUILD_PROTECTED) $(CONFIG_ARM_MPU)),)
   CMN_CSRCS += arm_mpu.c
 endif
 
