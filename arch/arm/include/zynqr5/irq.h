@@ -96,9 +96,14 @@
  * one timer:
  *   TTC0 (0xFF110000) is LINUX's.  It is bound to the ttc-pwm driver and
  *        exposes /sys/class/pwm/pwmchip0.  Do not touch it from the R5.
- *   TTC1 (0xFF120000) is the NuttX system tick (counter 0, IRQ 71).
- *   TTC2 (0xFF130000) is the PX4 HRT (see platforms/nuttx/src/px4/amd/zynqr5).
- *   TTC3 (0xFF140000) is unclaimed.
+ *   TTC1 (0xFF120000) carries BOTH NuttX timekeeping roles: counter 0 is the
+ *        system tick (IRQ 71) and counter 1 is the PX4 HRT (IRQ 72, see
+ *        platforms/nuttx/src/px4/amd/zynqr5/hrt).  The HRT was moved here from
+ *        TTC2 because TTC2's and TTC3's reference clocks read back gated in
+ *        CRL_APB, and ungating them means a read-modify-write to a reset
+ *        register that has already cost this board one power cycle.
+ *   TTC2 (0xFF130000) and TTC3 (0xFF140000) are unclaimed but their clocks are
+ *        gated, so a counter programmed there never increments.
  * All four are status="okay" in the Linux device tree, so "enabled in the DT"
  * is not evidence of ownership; check for a bound driver under
  * /sys/bus/platform/devices/ff1?0000.timer/driver instead.

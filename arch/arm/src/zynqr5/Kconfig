@@ -62,10 +62,17 @@ config ZYNQR5_TTC_HRT
 		(platforms/nuttx/src/px4/amd/zynqr5/hrt).
 
 		NOTE on ownership: TTC0 is used by Linux on the Kria KV260 (bound to
-		ttc-pwm, exposing pwmchip0), and TTC1 is the NuttX system tick, so
-		the default here is TTC2.  All four TTCs are status="okay" in the
+		ttc-pwm, exposing pwmchip0).  All four TTCs are status="okay" in the
 		Linux device tree, so check for a bound driver rather than trusting
 		the DT when choosing.
+
+		The defaults below name TTC2, but the Kria KV260 deliberately does
+		NOT use it: TTC2 and TTC3 have their reference clocks gated in
+		CRL_APB, so a counter programmed there never increments.  That board
+		puts the HRT on TTC1 counter 1 (IRQ 72) alongside the system tick on
+		counter 0 instead of ungating a clock, because that would mean a
+		read-modify-write to a reset register that has already cost the board
+		one power cycle.  See boards/amd/kria-kv260/nuttx-config/nsh/defconfig.
 
 if ZYNQR5_TTC_HRT
 
@@ -101,6 +108,52 @@ config ZYNQR5_TTC_HRT_PRESCALE_LOG2
 endif
 
 endmenu
+
+config ZYNQR5_ICACHE
+	bool "Cache instruction fetch from the DDR carveout"
+	default n
+	select ARM_MPU
+	---help---
+		Program one MPU region marking the DDR carveout Normal Write-Back
+		cacheable, then enable the L1 instruction cache.
+
+		This R5F runs its whole ~1.4 MB .text from external DDR.  Without
+		this, every instruction fetch is uncached: the TCM boot stub clears
+		SCTLR.M to drop the FSBL's regions, and on ARMv7-R a disabled MPU
+		selects the default memory map, under which caches cannot be used.
+
+		The DATA cache is deliberately NOT enabled.  The resource table
+		(vdev status, polled here and written by Linux), the RSC_TRACE ring
+		and the vrings are all shared with the A53, and the resource table
+		is only 8-byte aligned in the middle of .data, so it cannot be given
+		its own region without relocating it.  Leaving SCTLR.C clear keeps
+		every one of them coherent with no cache maintenance.
+
+		mpu_control() also sets SCTLR_BR, so everything outside the carveout
+		-- TCM, vrings, GIC, MMIO -- keeps its previous behaviour.
+
+config ZYNQR5_DCACHE
+	bool "Also enable the L1 data cache"
+	default n
+	depends on ZYNQR5_ICACHE
+	---help---
+		Set SCTLR.C so data accesses to the DDR carveout are cached too.
+
+		Separate from ZYNQR5_ICACHE because this is the half with the
+		coherency hazards, and keeping it its own symbol means it can be
+		turned off again without touching code -- useful for A/B measurement
+		and for bisecting a suspected coherency bug.
+
+		Enabling ZYNQR5_ICACHE already carves the two areas Linux touches
+		inside the carveout back out as Strongly-Ordered: the resource table
+		(whose RSC_VDEV status field Linux writes while this core polls it)
+		and the RSC_TRACE ring plus debug scratchpad.  The vrings and the
+		rpmsg buffer pool sit outside the carveout and are left on the
+		default memory map by SCTLR_BR.
+
+		If a coherency case was missed, the classic symptom is a firmware
+		that loads, reports "running", and never announces its rpmsg
+		channels, because rptun is spinning on a stale vdev status.
 
 config ZYNQR5_RPTUN
 	bool "ZynqMPSoC R5F rptun/OpenAMP IPC"
