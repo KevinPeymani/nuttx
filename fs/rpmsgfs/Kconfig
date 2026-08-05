@@ -10,3 +10,22 @@ config FS_RPMSGFS
 	---help---
 		Use rpmsg file system to mount remote directories to local.
 		This the method for user to use remote file like own core.
+
+config FS_RPMSGFS_BIND_TIMEOUT_MS
+	int "Name-service bind timeout (milliseconds)"
+	default 0
+	depends on FS_RPMSGFS
+	---help---
+		How long a path-based operation waits for the remote server to bind
+		this client's endpoint by name service before failing.
+
+		0 (the default) waits forever, which is the historical behaviour: the
+		first operation on the mount blocks until the remote appears, and if it
+		never appears the caller never returns.  On a system where that first
+		operation happens on the boot path, a remote that is absent or crashed
+		therefore stops the boot rather than degrading it.
+
+		Set a non-zero value to make the wait bounded.  Operations then fail
+		with -ENOMEM until the remote binds, and the mount's own "timeout="
+		option decides how long to keep retrying, so a missing server costs a
+		bounded delay and an unavailable filesystem instead of a hang.

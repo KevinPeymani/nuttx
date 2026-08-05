@@ -24,10 +24,12 @@
 
 #include <nuttx/config.h>
 
+#include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 #include <sys/uio.h>
 
+#include <nuttx/clock.h>
 #include <nuttx/kmalloc.h>
 #include <nuttx/fs/ioctl.h>
 #include <nuttx/fs/rpmsgfs.h>
@@ -35,6 +37,14 @@
 #include <nuttx/semaphore.h>
 
 #include "rpmsgfs.h"
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+#ifndef CONFIG_FS_RPMSGFS_BIND_TIMEOUT_MS
+#  define CONFIG_FS_RPMSGFS_BIND_TIMEOUT_MS 0
+#endif
 
 /****************************************************************************
  * Private Types
@@ -268,15 +278,74 @@ static int rpmsgfs_stat_handler(FAR struct rpmsg_endpoint *ept,
   return 0;
 }
 
+/****************************************************************************
+ * Name: rpmsgfs_ept_lost
+ *
+ * Description:
+ *   True once a server that HAD bound this endpoint has gone away, i.e. the
+ *   remote sent RPMSG_NS_DESTROY and open-amp reset dest_addr.
+ *
+ *   This must be distinguished from "not bound yet", which is the same
+ *   dest_addr but calls for waiting rather than failing.  priv->wait tells
+ *   them apart: it is posted once, permanently, by rpmsgfs_ns_bound().
+ *
+ *   The distinction matters because every send path is a trap once the server
+ *   is gone.  rpmsg_send()/rpmsg_send_nocopy() do not fail fast on an unready
+ *   endpoint -- they retry internally for RPMSG_TICK_COUNT, fifteen seconds,
+ *   before returning RPMSG_ERR_ADDR -- and rpmsg_send_nocopy() failing also
+ *   strands the TX buffer its caller already claimed, with no API in this
+ *   open-amp version to hand one back.  Sixteen of those exhaust the vring and
+ *   the next claim blocks forever.  And a send that *succeeds* into the void is
+ *   worse still: the request carries a pointer to the caller's stack cookie,
+ *   so the caller must then wait for a reply that will never come, and cannot
+ *   safely give up.
+ *
+ *   Failing before any of that happens is the only cheap answer, and it is
+ *   safe precisely because nothing has been sent and no cookie published.
+ ****************************************************************************/
+
+static bool rpmsgfs_ept_lost(FAR struct rpmsgfs_s *priv)
+{
+  int sval;
+
+  nxsem_get_value(&priv->wait, &sval);
+  return sval > 0 && !is_rpmsg_ept_ready(&priv->ept);
+}
+
 static FAR void *rpmsgfs_get_tx_payload_buffer(FAR struct rpmsgfs_s *priv,
                                                FAR uint32_t *len)
 {
   int sval;
 
+  if (rpmsgfs_ept_lost(priv))
+    {
+      return NULL;
+    }
+
   nxsem_get_value(&priv->wait, &sval);
   if (sval <= 0)
     {
+      /* priv->wait is posted only by rpmsgfs_ns_bound(), i.e. only once the
+       * remote server has bound this endpoint by name service.  Until then
+       * there is nowhere to send to.
+       */
+
+#if CONFIG_FS_RPMSGFS_BIND_TIMEOUT_MS > 0
+      if (nxsem_tickwait_uninterruptible(&priv->wait,
+            MSEC2TICK(CONFIG_FS_RPMSGFS_BIND_TIMEOUT_MS)) < 0)
+        {
+          /* Report it the way an exhausted buffer pool is reported: every
+           * caller already turns a NULL return into -ENOMEM, and
+           * rpmsgfs_mkpath()'s "timeout=" budget decides whether to retry.
+           * Do not post the semaphore -- nothing has been granted.
+           */
+
+          return NULL;
+        }
+#else
       rpmsg_wait(&priv->ept, &priv->wait);
+#endif
+
       rpmsg_post(&priv->ept, &priv->wait);
     }
 
@@ -340,6 +409,13 @@ static int rpmsgfs_send_recv(FAR struct rpmsgfs_s *priv,
   FAR struct rpmsgfs_cookie_s cookie;
   int ret;
 
+  /* See rpmsgfs_ept_lost(): never publish &cookie to a server that is gone. */
+
+  if (rpmsgfs_ept_lost(priv))
+    {
+      return -ENOTCONN;
+    }
+
   memset(&cookie, 0, sizeof(cookie));
   nxsem_init(&cookie.sem, 0, 0);
   nxsem_set_protocol(&cookie.sem, SEM_PRIO_NONE);
@@ -370,6 +446,23 @@ static int rpmsgfs_send_recv(FAR struct rpmsgfs_s *priv,
     {
       goto fail;
     }
+
+  /* KNOWN LIMITATION: this wait is unbounded, and deliberately so.
+   *
+   * msg->cookie above published &cookie -- a pointer into THIS STACK FRAME --
+   * to the remote.  Bounding the wait and returning would let the frame die
+   * while the remote still holds the pointer, so a server that answers late
+   * (or a restarted one draining a queued request) writes cookie->result and
+   * posts cookie->sem into a dead frame.  Blocking forever keeps the frame
+   * alive, which is the only thing making that safe.  rpmsgfs_ept_lost()
+   * therefore bails out BEFORE the send instead, where no cookie exists yet.
+   *
+   * The residual case this cannot cover is a request already in flight when
+   * the remote dies: that caller stays blocked for good.  Closing it properly
+   * means moving the cookie off the stack into a per-mount pool that is never
+   * freed, plus null-guards in every response handler that dereferences it.
+   * Do not "fix" this by adding a timeout here.
+   */
 
   ret = rpmsg_wait(&priv->ept, &cookie.sem);
   if (ret == 0)
@@ -456,6 +549,13 @@ ssize_t rpmsgfs_client_read(FAR void *handle, int fd,
       return 0;
     }
 
+  /* See rpmsgfs_ept_lost(): cookie.data would point at the caller's iovec. */
+
+  if (rpmsgfs_ept_lost(priv))
+    {
+      return -ENOTCONN;
+    }
+
   memset(&cookie, 0, sizeof(cookie));
 
   nxsem_init(&cookie.sem, 0, 0);
@@ -498,6 +598,13 @@ ssize_t rpmsgfs_client_write(FAR void *handle, int fd,
   if (!buf || count <= 0)
     {
       return 0;
+    }
+
+  /* See rpmsgfs_ept_lost(). */
+
+  if (rpmsgfs_ept_lost(priv))
+    {
+      return -ENOTCONN;
     }
 
   memset(&cookie, 0, sizeof(cookie));
