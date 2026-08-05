@@ -335,9 +335,16 @@ static int rpmsgfs_open(FAR struct file *filep, FAR const char *relpath,
   hf->fd = rpmsgfs_client_open(fs->handle, path, oflags, mode);
   if (hf->fd < 0)
     {
-      /* Error opening file */
+      /* Error opening file.  Report the server's errno rather than a blanket
+       * -EBADF: callers routinely branch on it, and collapsing everything to
+       * "bad file descriptor" turns two very ordinary situations into
+       * something that looks like corruption.  A file that simply does not
+       * exist yet must surface as -ENOENT, and a transport failure (no server
+       * bound, no buffer) as what it is, or a caller cannot tell "nothing
+       * stored yet" from "the store is damaged" from "the link is down".
+       */
 
-      ret = -EBADF;
+      ret = hf->fd;
       goto errout_with_buffer;
     }
 
@@ -1254,9 +1261,18 @@ static int rpmsgfs_statfs(FAR struct inode *mountpt, FAR struct statfs *buf)
 
   memset(buf, 0, sizeof(struct statfs));
   ret = rpmsgfs_client_statfs(fs->handle, fs->fs_root, buf);
-  buf->f_type = RPMSGFS_MAGIC;
+  if (ret >= 0)
+    {
+      /* Only cache a result that the server actually produced.  Stamping the
+       * magic unconditionally made the cache above hit on the next call and
+       * return success with a zeroed statfs forever after a single failure,
+       * so one transient error permanently mispresented a filesystem's size
+       * as zero.
+       */
 
-  memcpy(&fs->statfs, buf, sizeof(struct statfs));
+      buf->f_type = RPMSGFS_MAGIC;
+      memcpy(&fs->statfs, buf, sizeof(struct statfs));
+    }
 
   rpmsgfs_semgive(fs);
   return ret;
