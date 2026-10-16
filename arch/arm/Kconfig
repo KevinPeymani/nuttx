@@ -961,12 +961,27 @@ config ARCH_CHIP_HT32F491X3
 	select ARCH_HAVE_FPU
 	---help---
 		Holtek HT32F491x3 (ARM Cortex-M4) architectures
+		
+config ARCH_CHIP_ZYNQMP_RPU
+	bool "AMD Zynq UltraScale+ RPU"
+	select ARCH_CORTEXR5
+	select ARCH_HAVE_FPU
+	select ARCH_HAVE_DPFPU
+	select ARCH_DCACHE
+	select ARCH_ICACHE
+	select ARCH_HAVE_MPU
+	select ARCH_HAVE_LOWVECTORS
+	select ARMV7R_HAVE_GICv2
+	---help---
+		AMD Zynq UltraScale+ MPSoC RPU (Cortex-R5F) architecture
+
 
 config ARCH_CHIP_ARM_CUSTOM
 	bool "Custom ARM chip"
 	select ARCH_CHIP_CUSTOM
 	---help---
 		Select this option if there is no directory for the chip under arch/arm/src/.
+
 
 endchoice # ARM MCU selection
 
@@ -1408,6 +1423,7 @@ default "rtl8730e"	if ARCH_CHIP_RTL8730E
 	default "ht32f491x3"	if ARCH_CHIP_HT32F491X3
 	default "csk6"		if ARCH_CHIP_CSK6
 	default "mcx-nxxx"	if ARCH_CHIP_MCX_NXXX
+	default "zynqmp-rpu" if ARCH_CHIP_ZYNQMP_RPU
 
 config ARM_THUMB
 	bool "Thumb Mode"
@@ -2013,4 +2029,8 @@ endif
 if ARCH_CHIP_MCX_NXXX
 source "arch/arm/src/mcx-nxxx/Kconfig"
 endif
+if ARCH_CHIP_ZYNQMP_RPU
+source "arch/arm/src/zynqmp-rpu/Kconfig"
+endif
 endif # ARCH_ARM
+

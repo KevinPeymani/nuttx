@@ -3857,6 +3857,11 @@ config ARCH_BOARD_FRDM_MCXN236
 	---help---
 		This options selects support for NuttX on the NXP MCXN236 CPU EVK
 		board with ARM Cortex-M33.
+config ARCH_BOARD_KV260_RPU
+	bool "AMD Kria KV260 (RPU)"
+	depends on ARCH_CHIP_ZYNQMP_RPU
+	---help---
+		Kria KV260 Vision Starter Kit, Cortex-R5F RPU
 
 config ARCH_BOARD_CUSTOM
 	bool "Custom development board"
@@ -4335,6 +4340,7 @@ config ARCH_BOARD
 	default "csk6011a-nano"                if ARCH_BOARD_CSK6011A_NANO
 	default "frdm-mcxn236"                 if ARCH_BOARD_FRDM_MCXN236
 	default "devebox-stm32h743"            if ARCH_BOARD_DEVEBOX_STM32H743
+	default "kv260-rpu"            		   if ARCH_BOARD_KV260_RPU
 
 comment "Common Board Options"
 
@@ -5619,6 +5625,9 @@ source "boards/arm/nrf91/common/Kconfig"
 endif
 if ARCH_CHIP_RP23XX_RV
 source "boards/risc-v/rp23xx-rv/common/Kconfig"
+endif
+if ARCH_BOARD_KV260_RPU
+source "boards/arm/zynqmp-rpu/kv260-rpu/Kconfig"
 endif
 
 endif
