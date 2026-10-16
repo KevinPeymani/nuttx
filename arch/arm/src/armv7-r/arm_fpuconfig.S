@@ -91,6 +91,50 @@ arm_fpuconfig:
 	fmrx		r0, fpexc
 	orr		r0, r0, #0x40000000
 	fmxr		fpexc, r0
+
+#ifdef CONFIG_ARMV7R_LOCKSTEP_REGINIT
+	/* Zero the VFP registers, which are saved in every task context, so
+	 * that both lockstep cores store identical values.
+	 */
+
+	mov		r0, #0
+	vmov		d0, r0, r0
+	vmov		d1, r0, r0
+	vmov		d2, r0, r0
+	vmov		d3, r0, r0
+	vmov		d4, r0, r0
+	vmov		d5, r0, r0
+	vmov		d6, r0, r0
+	vmov		d7, r0, r0
+	vmov		d8, r0, r0
+	vmov		d9, r0, r0
+	vmov		d10, r0, r0
+	vmov		d11, r0, r0
+	vmov		d12, r0, r0
+	vmov		d13, r0, r0
+	vmov		d14, r0, r0
+	vmov		d15, r0, r0
+#ifdef CONFIG_ARM_DPFPU32
+	vmov		d16, r0, r0
+	vmov		d17, r0, r0
+	vmov		d18, r0, r0
+	vmov		d19, r0, r0
+	vmov		d20, r0, r0
+	vmov		d21, r0, r0
+	vmov		d22, r0, r0
+	vmov		d23, r0, r0
+	vmov		d24, r0, r0
+	vmov		d25, r0, r0
+	vmov		d26, r0, r0
+	vmov		d27, r0, r0
+	vmov		d28, r0, r0
+	vmov		d29, r0, r0
+	vmov		d30, r0, r0
+	vmov		d31, r0, r0
+#endif
+	vmsr		fpscr, r0
+#endif
+
 	bx		lr
 	.size	arm_fpuconfig, . - arm_fpuconfig
 #endif

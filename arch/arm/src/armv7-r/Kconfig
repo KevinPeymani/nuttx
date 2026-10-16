@@ -46,6 +46,28 @@ config ARMV7R_MEMINIT
 		the memory initialization first, then explicitly call
 		arm_data_initialize().
 
+config ARMV7R_LOCKSTEP_REGINIT
+	bool
+	default n
+	---help---
+		Zero the core registers of every processor mode and the VFP
+		registers at reset.  Cores running in dual-core lockstep (e.g. the
+		Zynq UltraScale+ RPU, see the "Lock-step Sequence" in UG1085) must
+		do this: the reset values are undefined and may differ between the
+		two cores, and the lockstep comparator flags an error as soon as
+		such a register is stored.
+
+config ARMV7R_ZERO_UNUSED_RAM
+	bool
+	default n
+	---help---
+		Write zeros from _ebss to the end of RAM (CONFIG_RAM_START +
+		CONFIG_RAM_SIZE) before the first C code runs.  The idle stack and
+		the heap live there and are never written by the loader, so on
+		ECC-protected RAM (e.g. Cortex-R5 TCM) their first read, or a
+		sub-word store that does a read-modify-write, could otherwise hit
+		an uninitialized ECC syndrome.
+
 config ARMV7R_HAVE_L2CC
 	bool
 	default n

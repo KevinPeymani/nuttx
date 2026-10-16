@@ -127,6 +127,58 @@
 	.type	__start, #function
 
 __start:
+#ifdef CONFIG_ARMV7R_LOCKSTEP_REGINIT
+	/* In lockstep, the reset values of the registers are undefined and may
+	 * differ between the two cores.  Zero every register, including the
+	 * banked SP and LR of each mode and the FIQ-banked r8-r12, before any
+	 * of them can be stored.  The banked SPs are never used as stacks:
+	 * every exception entry switches to the SYS mode stack.
+	 */
+
+	mov		r0, #0
+	mov		r1, #0
+	mov		r2, #0
+	mov		r3, #0
+	mov		r4, #0
+	mov		r5, #0
+	mov		r6, #0
+	mov		r7, #0
+	mov		r8, #0
+	mov		r9, #0
+	mov		r10, #0
+	mov		r11, #0
+	mov		r12, #0
+
+	cpsid		if, #PSR_MODE_FIQ
+	mov		r8, #0
+	mov		r9, #0
+	mov		r10, #0
+	mov		r11, #0
+	mov		r12, #0
+	mov		sp, #0
+	mov		lr, #0
+
+	cpsid		if, #PSR_MODE_IRQ
+	mov		sp, #0
+	mov		lr, #0
+
+	cpsid		if, #PSR_MODE_ABT
+	mov		sp, #0
+	mov		lr, #0
+
+	cpsid		if, #PSR_MODE_UND
+	mov		sp, #0
+	mov		lr, #0
+
+	cpsid		if, #PSR_MODE_SYS
+	mov		sp, #0
+	mov		lr, #0
+
+	cpsid		if, #PSR_MODE_SVC
+	mov		sp, #0
+	mov		lr, #0
+#endif
+
 #if defined(CONFIG_SMP) && CONFIG_SMP_NCPUS > 1
 	/* Get cpuindex, cpu0 continue boot, others wait event from cpu0 */
 
@@ -388,6 +440,21 @@ __cpu0_start:
 	 */
 
 	bl		arm_data_initialize
+#endif
+
+#ifdef CONFIG_ARMV7R_ZERO_UNUSED_RAM
+	/* Zero the RAM above .bss (idle stack and heap) so that ECC-protected
+	 * RAM is never read before it has been written.  Nothing has been
+	 * pushed on the stack yet.
+	 */
+
+	ldr		r0, =_ebss
+	ldr		r1, =(CONFIG_RAM_START + CONFIG_RAM_SIZE)
+	mov		r2, #0
+3:
+	cmp		r0, r1
+	strcc		r2, [r0], #4
+	bcc		3b
 #endif
 
 	/* Perform early C-level, platform-specific initialization.  Logic
