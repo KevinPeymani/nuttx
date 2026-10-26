@@ -671,6 +671,22 @@ config ARCH_CHIP_TMS570
 	---help---
 		TI TMS570 family
 
+config ARCH_CHIP_ZYNQMP_RPU
+	bool "AMD Zynq UltraScale+ RPU"
+	select ARCH_CORTEXR5
+	select ARCH_HAVE_FPU
+	select ARCH_HAVE_DPFPU
+	select ARCH_DCACHE
+	select ARCH_ICACHE
+	select ARCH_HAVE_MPU
+	select ARCH_HAVE_LOWVECTORS
+	select ARMV7R_HAVE_GICv2
+	select ARMV7R_LOCKSTEP_REGINIT
+	select ARMV7R_ZERO_UNUSED_RAM
+	select SCHED_HPWORK if RPTUN
+	---help---
+		AMD Zynq UltraScale+ MPSoC RPU (Cortex-R5F) architecture
+
 config ARCH_CHIP_TIVA
 	bool "TI Tiva"
 	select ARCH_HAVE_MPU
@@ -1200,6 +1216,7 @@ config ARCH_CHIP
 	default "stm32wl5"	if ARCH_CHIP_STM32WL5
 	default "str71x"	if ARCH_CHIP_STR71X
 	default "tms570"	if ARCH_CHIP_TMS570
+	default "zynqmp-rpu"	if ARCH_CHIP_ZYNQMP_RPU
 	default "xmc4"		if ARCH_CHIP_XMC4
 	default "mx8mp"		if ARCH_CHIP_MX8MP
 	default "cxd56xx"	if ARCH_CHIP_CXD56XX
@@ -1720,6 +1737,9 @@ source "arch/arm/src/str71x/Kconfig"
 endif
 if ARCH_CHIP_TMS570
 source "arch/arm/src/tms570/Kconfig"
+endif
+if ARCH_CHIP_ZYNQMP_RPU
+source "arch/arm/src/zynqmp-rpu/Kconfig"
 endif
 if ARCH_CHIP_XMC4
 source "arch/arm/src/xmc4/Kconfig"
