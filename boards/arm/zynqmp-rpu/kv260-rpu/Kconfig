@@ -1,0 +1,27 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+if ARCH_BOARD_KV260_RPU
+
+config KV260_RPU_QEMU
+	bool "Build for Xilinx QEMU"
+	default n
+	---help---
+		Adjust board clock assumptions for Xilinx QEMU instead of real
+		KV260 hardware.  QEMU's TTC model counts at a fixed 133 MHz
+		regardless of the clock in its hardware device tree, so the
+		system tick runs about 1.33x fast with the hardware value.
+
+config KV260_RPU_RPMSG_ECHO
+	bool "RPMsg echo service"
+	default n
+	depends on RPTUN
+	---help---
+		Create an RPMsg endpoint named "rpmsg-raw" on the link to Linux and
+		send every message it receives back to the sender.  Linux's
+		rpmsg_char driver binds to that name and exposes the endpoint as
+		/dev/rpmsgN, which makes it easy to test the link from Linux.
+
+endif # ARCH_BOARD_KV260_RPU
