@@ -24,7 +24,12 @@ include $(TOPDIR)/.config
 include $(TOPDIR)/tools/Config.mk
 include $(TOPDIR)/arch/arm/src/armv7-r/Toolchain.defs
 
-LDSCRIPT = tcm-lockstep.ld
+ifeq ($(CONFIG_BOOT_RUNFROMSDRAM),y)
+  LDSCRIPT = ddr-lockstep.ld
+else
+  LDSCRIPT = tcm-lockstep.ld
+endif
+
 ARCHSCRIPT += $(BOARD_DIR)$(DELIM)scripts$(DELIM)$(LDSCRIPT)
 
 CFLAGS := $(ARCHCFLAGS) $(ARCHOPTIMIZATION) $(ARCHCPUFLAGS) $(ARCHINCLUDES) $(ARCHDEFINES) $(EXTRAFLAGS)

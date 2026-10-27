@@ -32,5 +32,10 @@ endif()
 
 target_sources(board PRIVATE ${SRCS})
 
-set_property(GLOBAL PROPERTY LD_SCRIPT
-                             "${NUTTX_BOARD_DIR}/scripts/tcm-lockstep.ld")
+if(CONFIG_BOOT_RUNFROMSDRAM)
+  set_property(GLOBAL PROPERTY LD_SCRIPT
+                               "${NUTTX_BOARD_DIR}/scripts/ddr-lockstep.ld")
+else()
+  set_property(GLOBAL PROPERTY LD_SCRIPT
+                               "${NUTTX_BOARD_DIR}/scripts/tcm-lockstep.ld")
+endif()
