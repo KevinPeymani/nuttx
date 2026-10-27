@@ -36,8 +36,17 @@
 #include "zynqmp_rpu_lowputc.h"
 #include "zynqmp_rpu_timebase.h"
 
-#if defined(CONFIG_ARM_MPU) && defined(CONFIG_RPTUN)
+/* MPU regions are needed for code and data in DDR and for the RPMsg
+ * shared memory.
+ */
+
+#if defined(CONFIG_ARM_MPU) && \
+    (defined(CONFIG_BOOT_RUNFROMSDRAM) || defined(CONFIG_RPTUN))
+#  define ZYNQMP_RPU_MPU_REGIONS 1
 #  include "mpu.h"
+#endif
+
+#if defined(ZYNQMP_RPU_MPU_REGIONS) && defined(CONFIG_RPTUN)
 #  include "zynqmp_rpu_rsctable.h"
 #endif
 
@@ -45,20 +54,39 @@
  * Private Data
  ****************************************************************************/
 
-#if defined(CONFIG_ARM_MPU) && defined(CONFIG_RPTUN)
-/* The R5 is not cache-coherent with the A53s, so the RPMsg vrings and
- * buffers shared with Linux must not be cached.  Normal memory (TEX=001,
- * C=0, B=0) rather than Device, so memcpy and unaligned accesses work.
- * Non-shareable, because LDREX/STREX to shareable memory can abort on the
- * R5.  The resource table is in TCM, which is never cached.
+#ifdef ZYNQMP_RPU_MPU_REGIONS
+/* Regions are numbered in table order and a higher number wins where two
+ * regions overlap, so the more specific regions come last.
  */
 
 static const struct mpu_region_s g_zynqmp_rpu_mpu_regions[] =
 {
+#ifdef CONFIG_BOOT_RUNFROMSDRAM
+  /* The DDR carve-out that holds the code, data, stacks and heap: Normal
+   * memory, write-back write-allocate (TEX=001, C=1, B=1), executable.
+   * Non-shareable, for the same LDREX/STREX reason as below.  Only this
+   * core uses it, so caching it needs no maintenance.
+   */
+
+  {
+    CONFIG_RAM_START, CONFIG_RAM_SIZE,
+    MPU_RACR_TEX(1) | MPU_RACR_C | MPU_RACR_B | MPU_RACR_AP_RWRW
+  },
+#endif
+
+#ifdef CONFIG_RPTUN
+  /* The R5 is not cache-coherent with the A53s, so the RPMsg vrings and
+   * buffers shared with Linux must not be cached.  Normal memory (TEX=001,
+   * C=0, B=0) rather than Device, so memcpy and unaligned accesses work.
+   * Non-shareable, because LDREX/STREX to shareable memory can abort on
+   * the R5.  The resource table is in TCM, which is never cached.
+   */
+
   {
     ZYNQMP_RPU_SHM_BASE, ZYNQMP_RPU_SHM_SIZE,
     MPU_RACR_TEX(1) | MPU_RACR_AP_RWRW | MPU_RACR_XN
   },
+#endif
 };
 #endif
 
@@ -96,13 +124,14 @@ void arm_boot(void)
   zynqmp_rpu_timebase_init();
 
   /* __start enables the MPU with the background region, so privileged code
-   * uses the default memory map.  Only the RPMsg shared memory gets its own
-   * region; mpu_initialize() keeps the background region enabled.
+   * uses the default memory map.  Only DDR code and data and the RPMsg
+   * shared memory get their own regions; mpu_initialize() keeps the
+   * background region enabled.
    *
    * TODO (milestone 2): configure MPU regions for TCM and device memory.
    */
 
-#if defined(CONFIG_ARM_MPU) && defined(CONFIG_RPTUN)
+#ifdef ZYNQMP_RPU_MPU_REGIONS
   mpu_initialize(g_zynqmp_rpu_mpu_regions,
                  nitems(g_zynqmp_rpu_mpu_regions));
 #endif
