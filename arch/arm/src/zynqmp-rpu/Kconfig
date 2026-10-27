@@ -25,4 +25,25 @@ config ZYNQMP_RPU_UART1
 
 endmenu # ZynqMP RPU Peripheral Support
 
+menu "ZynqMP RPU Timebase"
+
+config ZYNQMP_RPU_TIMEBASE_TTC
+      int "Timebase TTC (0-3)"
+      default 2
+      range 0 3
+      ---help---
+            TTC module whose counter runs freely as the timebase for
+            up_udelay().  Under remoteproc, Linux must not use it: disable
+            it in the device tree.  On the KV260, TTC0 drives the fan.
+
+config ZYNQMP_RPU_TIMEBASE_COUNTER
+      int "Timebase counter (0-2)"
+      default 1
+      range 0 2
+      ---help---
+            Counter of the timebase TTC.  The system tick uses TTC2
+            counter 0.
+
+endmenu # ZynqMP RPU Timebase
+
 endif # ARCH_CHIP_ZYNQMP_RPU

@@ -34,6 +34,7 @@
 
 #include "zynqmp_rpu_boot.h"
 #include "zynqmp_rpu_lowputc.h"
+#include "zynqmp_rpu_timebase.h"
 
 #if defined(CONFIG_ARM_MPU) && defined(CONFIG_RPTUN)
 #  include "mpu.h"
@@ -89,6 +90,10 @@ void arm_boot(void)
 
   arm_fpuconfig();
   zynqmp_rpu_lowsetup();
+
+  /* Start the timebase before anything can call up_udelay() */
+
+  zynqmp_rpu_timebase_init();
 
   /* __start enables the MPU with the background region, so privileged code
    * uses the default memory map.  Only the RPMsg shared memory gets its own

@@ -24,7 +24,8 @@ set(SRCS
     zynqmp_rpu_boot.c
     zynqmp_rpu_irq.c
     zynqmp_rpu_lowputc.c
-    zynqmp_rpu_serial.c)
+    zynqmp_rpu_serial.c
+    zynqmp_rpu_timebase.c)
 
 if(NOT CONFIG_SCHED_TICKLESS)
   list(APPEND SRCS zynqmp_rpu_timerisr.c)

@@ -26,6 +26,7 @@ include armv7-r/Make.defs
 
 CHIP_CSRCS  = zynqmp_rpu_boot.c
 CHIP_CSRCS += zynqmp_rpu_irq.c zynqmp_rpu_lowputc.c zynqmp_rpu_serial.c
+CHIP_CSRCS += zynqmp_rpu_timebase.c
 
 # Configuration dependent C and assembly language files
 
